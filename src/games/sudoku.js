@@ -158,6 +158,9 @@ export default {
       .sd-cell.bT{ border-top-width:4px; } .sd-cell.bL{ border-left-width:4px; }
       .sd-cell.bR{ border-right-width:4px; } .sd-cell.bB{ border-bottom-width:4px; }
 
+      .sd-cands{ position:absolute; inset:2px; display:grid; grid-template-columns:repeat(3,1fr); grid-auto-rows:1fr; place-items:center; font-size:10px; line-height:1; color:var(--muted); pointer-events:none; }
+      .sd-cands span{ width:100%; text-align:center; }
+
       .sd-ovl{ position:absolute; inset:0; border-radius:10px; pointer-events:none; z-index:20; opacity:0; transition: opacity var(--errFadeMs) ease-out; }
       .sd-ovl.err-scope.show{ opacity:1; background: var(--errScope) !important; }
       .sd-ovl.err-peer.show{  opacity:1; background: var(--errFill) !important; box-shadow: 0 0 0 3px var(--err) inset !important; }
@@ -207,6 +210,8 @@ export default {
       .sd-tipbtn:disabled{ opacity:.28; cursor:default; }
       .sd-tipbtn:hover:not(:disabled){ background:rgba(255,255,255,.10); }
 
+      .sd-audio-gate{ position:absolute; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; z-index:10000; color:var(--fg); font-size:14px; cursor:pointer; }
+
       .sd-fx{ position:absolute; inset:0; z-index:var(--fxZ); pointer-events:none; display:block; }
 
       /* Coach overlay (mask + card) */
@@ -246,6 +251,14 @@ export default {
     root.appendChild(css);
 
     const wrap = document.createElement('div'); wrap.className='sd-wrap'; root.appendChild(wrap);
+
+    const audioGate = document.createElement('div'); audioGate.className='sd-audio-gate'; audioGate.textContent='Tap to enable sound'; wrap.appendChild(audioGate);
+
+    function updateAudioGate(){
+      if(Tone.context && Tone.context.state !== 'running') audioGate.style.display='flex';
+      else audioGate.style.display='none';
+    }
+    audioGate.addEventListener('click', async ()=>{ await ensureAudioReady(); updateAudioGate(); });
 
     // FX Canvas (confetti)
     const fxCanvas = document.createElement('canvas'); fxCanvas.className='sd-fx';
@@ -340,6 +353,8 @@ export default {
     const tip = document.createElement('div'); tip.className='sd-tip';
     const tipGrid = document.createElement('div'); tipGrid.className='sd-tipgrid';
     tip.append(tipGrid); board.appendChild(tip);
+
+    const stickyCands = new Map();
 
     const hotel = document.createElement('div'); hotel.className='sd-hotel';
     hotel.addEventListener('contextmenu', e=> e.preventDefault());
@@ -440,6 +455,7 @@ export default {
         }finally{
           audioInitPromise = null;
           reflectAudioButtons();
+          updateAudioGate();
         }
         return audioReady;
       })();
@@ -451,13 +467,14 @@ export default {
       wrap.removeEventListener('pointerdown', tryUnlockOnce, true);
       wrap.removeEventListener('keydown', tryUnlockOnce, true);
       wrap.removeEventListener('touchstart', tryUnlockOnce, true);
-      ensureAudioReady();
+      ensureAudioReady().then(updateAudioGate);
     };
     wrap.addEventListener('pointerdown', tryUnlockOnce, true);
     wrap.addEventListener('keydown', tryUnlockOnce, true);
     wrap.addEventListener('touchstart', tryUnlockOnce, true);
 
     reflectAudioButtons();
+    updateAudioGate();
 
     // Variant params
     let N = currentVariant.N, BR=currentVariant.BR, BC=currentVariant.BC, SYMBOLS=currentVariant.symbols;
@@ -719,6 +736,7 @@ export default {
       redoStack.length=0;
       applyCell(r,c,after);
       celebrateUnitsAround(r,c);
+      stickyCands.delete(`${r},${c}`);
       draw(); save();
     }
     function place(r,c,v){
@@ -839,6 +857,20 @@ export default {
         const ovl = document.createElement('div'); ovl.className='sd-ovl';
         cell.appendChild(ovl);
 
+        const key = `${r},${c}`;
+        const stuck = stickyCands.get(key);
+        if(v===0 && stuck){
+          const cd=document.createElement('div'); cd.className='sd-cands';
+          for(const d of DIGITS()){
+            const sp=document.createElement('span');
+            sp.textContent = stuck.has(d) ? valToSym(d) : '';
+            cd.appendChild(sp);
+          }
+          cell.appendChild(cd);
+        } else if(v!==0){
+          stickyCands.delete(key);
+        }
+
         // Green candidates ONLY when hotel is armed AND (no selection OR selection is given)
         const shouldShowCand =
           !!hotelDigit &&
@@ -873,7 +905,10 @@ export default {
           hideTip();
           if(showSolutionHold) return;
           if(grid[r][c]) return;
-          showTipAtCell(r,c, candidatesFor(r,c));
+          const key = `${r},${c}`;
+          if(stickyCands.has(key)) stickyCands.delete(key);
+          else stickyCands.set(key, candidatesFor(r,c));
+          draw();
           pingSfx('select');
           coachReact('tip');
         });
@@ -1099,39 +1134,6 @@ export default {
     }
 
     // -------------------------- Right-click candidate tip ------------------------
-    function showTipAtCell(r,c, cand){
-      if(coachActive && !coachAllow?.('tip', {r,c})) return;
-      tip.innerHTML = '';
-      const gridEl = document.createElement('div'); gridEl.className='sd-tipgrid';
-      for(const i of DIGITS()){
-        const b=document.createElement('button'); b.className='sd-tipbtn'; b.textContent = cand.has(i)? valToSym(i) : '';
-        b.disabled = !cand.has(i);
-        b.addEventListener('click', (e)=>{ e.stopPropagation(); attemptPlace(r,c,i,false); hideTip(); draw(); coachReact('tipPlace'); });
-        gridEl.appendChild(b);
-      }
-      tip.appendChild(gridEl);
-
-      const cellEl = boardCell(r,c);
-      if(!cellEl) return;
-      const brect = board.getBoundingClientRect();
-      const crect = cellEl.getBoundingClientRect();
-
-      const cellSz = Math.max(26, Math.min(34, parseFloat(getComputedStyle(stage).getPropertyValue('--stageSize'))/18 || 28));
-      const cols = 4, gap=6, pad=8;
-      const tW = (cellSz*cols + gap*(cols-1)) + pad*2;
-      const rows = Math.ceil(N/cols);
-      const tH = (cellSz*rows + gap*(rows-1)) + pad*2;
-
-      let x = (crect.right - brect.left) + 6;
-      let y = (crect.top   - brect.top)  - tH - 6;
-      if (x + tW > brect.width) x = brect.width - tW - 6;
-      if (x < 6) x = 6;
-      if (y < 6) y = (crect.bottom - brect.top) + 6;
-
-      tip.style.left = `${x}px`; tip.style.top = `${y}px`;
-      tip.classList.add('open');
-      clearTimeout(tip._timer); tip._timer = setTimeout(()=> hideTip(), 3000);
-    }
     function hideTip(){ tip.classList.remove('open'); clearTimeout(tip._timer); }
 
     // -------------------------------- Keyboard ----------------------------------
@@ -1290,7 +1292,7 @@ export default {
 
     const handleResize = ()=> { sizeStage(); queueCoachReposition(); };
     window.addEventListener('resize', handleResize);
-    document.addEventListener('fullscreenchange', ()=> queueCoachReposition());
+    document.addEventListener('fullscreenchange', handleResize);
     document.fonts?.addEventListener?.('loadingdone', ()=> queueCoachReposition());
 
     // visibility → resume audio if user enabled music
