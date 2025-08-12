@@ -411,45 +411,51 @@ export default {
     // ----------------------------- Audio (Unlocker + Tone) ----------------------
     const tinyFallback = makeTinyAudio(); // emergency UI blips only
 
-    let audioUnlocked = false;
-    let audioUnlocking = null;
+    let audioReady = false;
+    let audioInitPromise = null;
 
-    function ensureAudioUnlocked(){
-      if(audioUnlocked) return Promise.resolve(true);
-      if(audioUnlocking) return audioUnlocking;
+    // placeholders until audio is unlocked
+    let sfx = { clickSoft(){}, select(){}, move(){}, place(){}, clear(){}, hint(){}, error(){}, unit(){}, solve(){}, toggle(){}, drag(){}, hover(){} };
+    let music = { setEnabled(){} };
 
-      audioUnlocking = (async ()=>{
+    function ensureAudioReady(){
+      if(audioReady) return Promise.resolve(true);
+      if(audioInitPromise) return audioInitPromise;
+
+      audioInitPromise = (async ()=>{
         try{
-          await Tone.start(); // creates and resumes the context after a gesture
+          await Tone.start();
           if (Tone.context && Tone.context.state !== 'running'){
             try{ await Tone.context.resume(); }catch{}
           }
-          audioUnlocked = true;
-          return true;
-        }catch{
-          // Some browsers still unlock only on specific gestures; we'll mark false and try again in the next gesture
-          audioUnlocked = false;
-          return false;
+          sfx = makeSfxEngineTone(prefs, save, tinyFallback, () => audioReady, ensureAudioReady);
+          music = makeLofiMusicToneOrMP3_Lazy(prefs, save, () => audioReady, ensureAudioReady, setStatus);
+          audioReady = true;
+          // Respect stored preference
+          music.setEnabled(!!prefs.audio.music);
+        }catch(e){
+          console.warn('Audio unlock failed', e);
+          audioReady = false;
         }finally{
-          audioUnlocking = null;
+          audioInitPromise = null;
+          reflectAudioButtons();
         }
+        return audioReady;
       })();
-      return audioUnlocking;
+      return audioInitPromise;
     }
 
     // One-time global unlock on first real gesture
-    const tryUnlockOnce = async ()=>{
-      document.removeEventListener('pointerdown', tryUnlockOnce, true);
-      document.removeEventListener('keydown', tryUnlockOnce, true);
-      await ensureAudioUnlocked();
+    const tryUnlockOnce = ()=>{
+      wrap.removeEventListener('pointerdown', tryUnlockOnce, true);
+      wrap.removeEventListener('keydown', tryUnlockOnce, true);
+      wrap.removeEventListener('touchstart', tryUnlockOnce, true);
+      ensureAudioReady();
     };
-    document.addEventListener('pointerdown', tryUnlockOnce, true);
-    document.addEventListener('keydown', tryUnlockOnce, true);
+    wrap.addEventListener('pointerdown', tryUnlockOnce, true);
+    wrap.addEventListener('keydown', tryUnlockOnce, true);
+    wrap.addEventListener('touchstart', tryUnlockOnce, true);
 
-    const sfx  = makeSfxEngineTone(prefs, save, tinyFallback, () => audioUnlocked, ensureAudioUnlocked);
-    const music = makeLofiMusicToneOrMP3_Lazy(prefs, save, () => audioUnlocked, ensureAudioUnlocked, setStatus);
-
-    music.setEnabled(!!prefs.audio.music);
     reflectAudioButtons();
 
     // Variant params
@@ -1236,13 +1242,13 @@ export default {
     btnSfx.addEventListener('click', async ()=>{
       if(coachActive && !coachAllow?.('sfx')) return;
       prefs.audio.sfx = !prefs.audio.sfx; save(); reflectAudioButtons();
-      if (prefs.audio.sfx) sfx.clickSoft();
+      if (prefs.audio.sfx){ await ensureAudioReady(); sfx.clickSoft(); }
       coachReact('sfx');
     });
     btnMusic.addEventListener('click', async ()=>{
       if(coachActive && !coachAllow?.('music')) return;
       // Unlock within the same gesture if needed
-      await ensureAudioUnlocked();
+      await ensureAudioReady();
       prefs.audio.music = !prefs.audio.music; save(); reflectAudioButtons();
       music.setEnabled(prefs.audio.music);
       sfx.clickSoft();
@@ -1293,7 +1299,7 @@ export default {
         if(pauseStart){ pausedAcc += performance.now()-pauseStart; pauseStart=null; }
         if (prefs.audio.music){
           // try to resume quietly
-          try{ await ensureAudioUnlocked(); await Tone.context.resume(); }catch{}
+          try{ await ensureAudioReady(); await Tone.context.resume(); }catch{}
         }
       }
     });
