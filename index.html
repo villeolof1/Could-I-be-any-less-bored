@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Arcade</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/src/styles.css" />
+</head>
+<body>
+  <div id="app" class="page">
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <span>Arcade</span>
+      </div>
+      <div class="top-actions">
+        <input id="search" placeholder="Search games…" aria-label="Search games" />
+        <button id="themeToggle" class="ghost" title="Toggle theme">◐</button>
+      </div>
+    </header>
+
+    <nav class="tabs" aria-label="Filters">
+      <button data-filter="all" class="tab active">All</button>
+      <button data-filter="arcade" class="tab">Arcade</button>
+      <button data-filter="puzzle" class="tab">Puzzle</button>
+      <button data-filter="logic" class="tab">Logic</button>
+      <button data-filter="art" class="tab">Art</button>
+      <button data-filter="favorites" class="tab">Favorites</button>
+      <button data-filter="recent" class="tab">Recent</button>
+    </nav>
+
+    <main id="gallery" class="gallery" aria-live="polite"></main>
+
+    <footer class="footer">
+      <span>Minimal Arcade</span>
+      <span class="sep">•</span>
+      <a href="#" id="resetProgress">Reset progress</a>
+    </footer>
+  </div>
+
+  <div id="overlay" class="overlay hidden" aria-hidden="true"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
