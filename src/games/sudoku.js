@@ -71,10 +71,10 @@ export default {
         --blurMask: blur(2px);
         --yellow:#ffd447;
 
-        --coachZ: 75;
-        --maskZ: 70;
         --fxZ: 60;
-        --hotZ: 80;
+        --maskZ: 9900;
+        --coachZ: 9910;
+        --hotZ: 9920;
       }
 
       .sd-wrap{
@@ -210,7 +210,7 @@ export default {
       .sd-fx{ position:absolute; inset:0; z-index:var(--fxZ); pointer-events:none; display:block; }
 
       /* Coach overlay (mask + card) */
-      .sd-coach{ position:absolute; inset:0; z-index:var(--maskZ); pointer-events:none; }
+      .sd-coach{ position:fixed; inset:0; z-index:var(--maskZ); pointer-events:none; }
       .sd-coach.hidden{ display:none; }
       .sd-coach svg{ position:absolute; inset:0; width:100%; height:100%; }
       .sd-mask-dim{ fill: rgba(10,14,22,.66); }
@@ -226,7 +226,7 @@ export default {
       .sd-coach-card h4{ margin:0 0 6px; font-size:14px; }
       .sd-coach-card p{ margin:0 0 8px; font-size:12px; color:var(--muted); min-height:1.1em; }
       .sd-coach-card .actions{ display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
-      .sd-coach .coach-hot{ position:relative; z-index:var(--hotZ) !important; }
+      .coach-hot{ position:relative; z-index:var(--hotZ) !important; }
 
       /* Dock mode (phones) */
       .sd-coach.dock .sd-coach-card{
@@ -258,7 +258,7 @@ export default {
     coach.innerHTML = `
       <svg aria-hidden="true">
         <defs>
-          <mask id="sd-mask">
+          <mask id="sd-mask" maskUnits="userSpaceOnUse">
             <rect x="0" y="0" width="100%" height="100%" fill="white"></rect>
             <!-- dynamic holes inserted here as <rect> or <path> with fill="black" -->
           </mask>
@@ -266,7 +266,7 @@ export default {
         <rect class="sd-mask-dim sd-mask-blur" x="0" y="0" width="100%" height="100%" mask="url(#sd-mask)"></rect>
       </svg>
     `;
-    wrap.appendChild(coach);
+    document.body.appendChild(coach);
     const coachCard = document.createElement('div'); coachCard.className='sd-coach-card'; coachCard.style.opacity='0'; coach.appendChild(coachCard);
 
     // ------------------------------ Top bar & controls ---------------------------
@@ -409,7 +409,7 @@ export default {
     selDiff.value = difficulty;
 
     // ----------------------------- Audio (Unlocker + Tone) ----------------------
-    const tinyFallback = makeTinyAudio(); // emergency UI blips only
+    let tinyFallback = null; // emergency UI blips only (created after unlock)
 
     let audioReady = false;
     let audioInitPromise = null;
@@ -428,6 +428,7 @@ export default {
           if (Tone.context && Tone.context.state !== 'running'){
             try{ await Tone.context.resume(); }catch{}
           }
+          if(!tinyFallback) tinyFallback = makeTinyAudio();
           sfx = makeSfxEngineTone(prefs, save, tinyFallback, () => audioReady, ensureAudioReady);
           music = makeLofiMusicToneOrMP3_Lazy(prefs, save, () => audioReady, ensureAudioReady, setStatus);
           audioReady = true;
@@ -1297,9 +1298,8 @@ export default {
       if(document.hidden){ if(!pauseStart) pauseStart=performance.now(); }
       else{
         if(pauseStart){ pausedAcc += performance.now()-pauseStart; pauseStart=null; }
-        if (prefs.audio.music){
-          // try to resume quietly
-          try{ await ensureAudioReady(); await Tone.context.resume(); }catch{}
+        if (prefs.audio.music && audioReady){
+          try{ await Tone.context.resume(); }catch{}
         }
       }
     });
@@ -1852,7 +1852,7 @@ export default {
 
       function updateMask(spots){
         // Remove previous hot classes
-        wrap.querySelectorAll('.coach-hot').forEach(el=> el.classList.remove('coach-hot'));
+        document.querySelectorAll('.coach-hot').forEach(el=> el.classList.remove('coach-hot'));
         // Build mask holes
         const svg = coach.querySelector('svg');
         const mask = svg.querySelector('#sd-mask');
@@ -1863,12 +1863,11 @@ export default {
         }
         // baseline white rect exists (index 0)
         // Add black holes
-        const wrapRect = wrap.getBoundingClientRect();
         const addHoleRect = (r)=> {
           const hole = document.createElementNS('http://www.w3.org/2000/svg','rect');
           hole.setAttribute('fill','black');
-          hole.setAttribute('x', String(r.left - wrapRect.left));
-          hole.setAttribute('y', String(r.top - wrapRect.top));
+          hole.setAttribute('x', String(r.left));
+          hole.setAttribute('y', String(r.top));
           hole.setAttribute('width', String(r.width));
           hole.setAttribute('height', String(r.height));
           mask.appendChild(hole);
@@ -1926,7 +1925,6 @@ export default {
 
       function positionCoachCard(force){
         if(!coachActive) return;
-        // Choose side that avoids overlapping hot elements
         const step = buildCoachSteps()[coachStepIdx];
         const anchorEls = (step.spots?.[0] ? Array.from(document.querySelectorAll(step.spots[0].selector)) : [board]).filter(Boolean);
         const anchor = anchorEls[0] || board;
@@ -1934,32 +1932,26 @@ export default {
         const wr = wrap.getBoundingClientRect();
 
         const candidates = [
-          {side:'right',  x: ar.right - wr.left + 12, y: ar.top - wr.top},
-          {side:'left',   x: ar.left - wr.left - (coachCard.offsetWidth||320) - 12, y: ar.top - wr.top},
-          {side:'bottom', x: ar.left - wr.left, y: ar.bottom - wr.top + 12},
-          {side:'top',    x: ar.left - wr.left, y: ar.top - wr.top - (coachCard.offsetHeight||160) - 12}
+          {side:'right',  x: ar.right + 12, y: ar.top},
+          {side:'left',   x: ar.left - (coachCard.offsetWidth||320) - 12, y: ar.top},
+          {side:'bottom', x: ar.left, y: ar.bottom + 12},
+          {side:'top',    x: ar.left, y: ar.top - (coachCard.offsetHeight||160) - 12}
         ];
 
-        const hotRects = Array.from(wrap.querySelectorAll('.coach-hot')).map(el=> el.getBoundingClientRect());
+        const hotRects = Array.from(document.querySelectorAll('.coach-hot')).map(el=> el.getBoundingClientRect());
 
         function score(pos){
-          // Simple scoring: penalize overlaps and offscreen
           const cw = coachCard.offsetWidth || 320;
           const ch = coachCard.offsetHeight || 160;
-          let r = { left: pos.x, top: pos.y, right: pos.x+cw, bottom: pos.y+ch, width:cw, height:ch };
+          const r = { left: pos.x, top: pos.y, right: pos.x+cw, bottom: pos.y+ch, width:cw, height:ch };
           let overlap = 0;
-          hotRects.forEach(hr=>{
-            const a = intersectArea(r, {left:hr.left - wr.left, top:hr.top - wr.top, right:hr.right - wr.left, bottom:hr.bottom - wr.top});
-            overlap += a;
-          });
-          // Offscreen penalties
-          const offX = Math.max(0, -r.left) + Math.max(0, r.right - (wr.width-8));
-          const offY = Math.max(0, -r.top)  + Math.max(0, r.bottom - (wr.height-8));
+          hotRects.forEach(hr=>{ overlap += intersectArea(r, hr); });
+          const offX = Math.max(0, -r.left) + Math.max(0, r.right - (window.innerWidth-8));
+          const offY = Math.max(0, -r.top)  + Math.max(0, r.bottom - (window.innerHeight-8));
           const off = offX*2 + offY*2;
           return -(overlap*10 + off);
         }
 
-        // Dock mode on very narrow width
         const dock = (wr.width < 480);
         coach.classList.toggle('dock', dock);
         let best = candidates[0], bestScore = -Infinity;
@@ -1968,19 +1960,17 @@ export default {
             const s = score(c);
             if(s > bestScore){ best=c; bestScore=s; }
           }
-          // Auto-nudge inside bounds
-          let x = Math.max(8, Math.min(best.x, wr.width - (coachCard.offsetWidth||320) - 8));
-          let y = Math.max(8, Math.min(best.y, wr.height - (coachCard.offsetHeight||160) - 8));
+          let x = Math.max(8, Math.min(best.x, window.innerWidth - (coachCard.offsetWidth||320) - 8));
+          let y = Math.max(8, Math.min(best.y, window.innerHeight - (coachCard.offsetHeight||160) - 8));
           coachCard.style.left = x + 'px';
           coachCard.style.top  = y + 'px';
           coachCard.style.right = 'auto';
           coachCard.style.bottom= 'auto';
         }else{
-          // Docked bar at bottom
-          coachCard.style.left='8px';
-          coachCard.style.right='8px';
-          coachCard.style.bottom='8px';
-          coachCard.style.top='auto';
+          coachCard.style.left = (wr.left + 8) + 'px';
+          coachCard.style.right = (window.innerWidth - wr.right + 8) + 'px';
+          coachCard.style.bottom = (window.innerHeight - wr.bottom + 8) + 'px';
+          coachCard.style.top = 'auto';
         }
         coachCard.style.opacity='1';
       }
