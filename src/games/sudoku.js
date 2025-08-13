@@ -1,22 +1,19 @@
-﻿// sudoku.js — Sudoku (v31)
+﻿// sudoku.js — Sudoku (v32)
 // -----------------------------------------------------------
-// Big updates in v31
-// • Bullet-proof music with a real Audio Unlocker (lofi.mp3 preferred; multi-URL resolve; smooth fades; resume on tab return).
-// • Tutorial 6.0 “Live Coach”:
-//    - First-time only (durable sudoku:tutorial:seen flag; restart from ⚙️ Help)
-//    - SVG mask with multiple holes (only non-interactive parts are dim/blurred)
-//    - Smart, non-blocking card placement (right/left/top/bottom; auto-nudge; “dock” bar on tiny screens)
-//    - Typewriter narration (respects reduced motion); lots of playful reaction lines (non-repeating shuffle bag)
-//    - Gentle gating: try actions freely; Next appears after 3s; auto-advance ~4s after you complete a step if you pause
-//    - State continuity (selection / armed digit preserved into the next relevant step)
-//    - Deep Dive chapter covering every control & setting, optional from the card
-// • Quota-safe localStorage writes (evicts old Sudoku saves on pressure; no QuotaExceededError crashes).
-// • Minor: re-anchor coach on resize/fullscreen/font load/popup changes; z-order discipline; perf tweaks.
+// What’s new in v32 (highlights)
+// • Coach/tutorial extracted to ./sudoku-coach.js with:
+//    - glowing pointer, smarter card placement (no overlaps), fullscreen-aware
+//    - richer, non-repeating lines; smooth, gated steps; error demo
+//    - always visible in fullscreen (reparent on fullscreenchange)
+// • Audio unlock UX hardened (explicit resume path + overlay)
+// • Fullscreen toggle button (⛶) for consistency with coach’s first step
+// • Saved finish times (per variant+difficulty) with quick “Best times” in Help
 //
 // Depends on: makeHUD(api,{time:true}) and makeConfetti(canvas,opts) from ../kit/gamekit.js
 // Install: npm i tone
 import { makeHUD, makeConfetti, mkAudio as makeTinyAudio } from '../kit/gamekit.js';
 import * as Tone from 'tone';
+import { makeSudokuCoach } from './sudoku/sudoku-coach.js';
 
 export default {
   id: 'sudoku',
@@ -29,9 +26,9 @@ export default {
     const ERR_FADE_MS = 1600;
     const ERR_STRIP_DELAY = ERR_FADE_MS + 160;
     const CELE_FADE_MS = 680;
-    const NEXT_APPEAR_MS = 3000;  // Tutorial: Next button appears after 3s
-    const AUTO_ADV_IDLE_MS = 4000; // Tutorial: auto-advance ~4s after goal if idle
-    const IDLE_AFTER_INTERACT_MS = 1500; // If they keep interacting, wait for ~1.5s idle then resume auto-advance countdown
+    const NEXT_APPEAR_MS = 3000;
+    const AUTO_ADV_IDLE_MS = 4000;
+    const IDLE_AFTER_INTERACT_MS = 1500;
 
     // ------------------------------- Root & CSS ---------------------------------
     const root = document.createElement('div');
@@ -44,52 +41,21 @@ export default {
     const css = document.createElement('style');
     css.textContent = `
       @import url('https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap');
-
       :root{
         --fg:#e9ecf4; --muted:#a3acc3; --bg:#0f141c;
         --panel:rgba(255,255,255,.03); --ring:#2c3850;
         --accentA:#86b4ff; --accentB:#a5e8ff;
-
-        --peer:rgba(180,200,255,.12);
-        --match:rgba(130,170,255,.18);
-        --cand:rgba(130,220,190,.22);
-
-        --err:#ff3c3c;
-        --errFill:rgba(255,60,60,.36);
-        --errScope:rgba(255,60,60,.18);
-
+        --peer:rgba(180,200,255,.12); --match:rgba(130,170,255,.18); --cand:rgba(130,220,190,.22);
+        --err:#ff3c3c; --errFill:rgba(255,60,60,.36); --errScope:rgba(255,60,60,.18);
         --celeScope:rgba(70,210,150,.18);
-
-        --rowcol:rgba(180,200,255,.10);
-        --done:#4ad782;
-
-        --errFadeMs: ${ERR_FADE_MS}ms;
-        --celeFadeMs: ${CELE_FADE_MS}ms;
-
-        --stageSize: 680px;
-        --gap: 10px;
-        --blurMask: blur(2px);
-        --yellow:#ffd447;
-
-        --fxZ: 60;
-        --maskZ: 9900;
-        --coachZ: 9910;
-        --hotZ: 9920;
+        --rowcol:rgba(180,200,255,.10); --done:#4ad782;
+        --errFadeMs: ${ERR_FADE_MS}ms; --celeFadeMs: ${CELE_FADE_MS}ms;
+        --stageSize: 680px; --gap: 10px; --blurMask: blur(2px); --yellow:#ffd447;
+        --fxZ: 60; --maskZ: 9900; --coachZ: 9910; --hotZ: 9920;
       }
-
-      .sd-wrap{
-        width: 100%;
-        color:var(--fg);
-        background:var(--bg);
-        position:relative;
-        padding: 10px 10px 14px;
-        border-radius:14px;
-        max-width: 100%;
-        box-sizing: border-box;
-        overflow: clip;
-      }
+      .sd-wrap{ width:100%; color:var(--fg); background:var(--bg); position:relative; padding:10px 10px 14px; border-radius:14px; max-width:100%; box-sizing:border-box; overflow:clip; }
       .sd-wrap, .sd-wrap *{ -webkit-tap-highlight-color: transparent; }
-      .sd-wrap *:focus{ outline:none !important; box-shadow:none !important; }
+      .sd-wrap *:focus{ outline:none!important; box-shadow:none!important; }
 
       .sd-topbar{ display:flex; flex-direction:column; gap:8px; align-items:center; justify-content:center; }
       .sd-controls{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:center; max-width:100%; }
@@ -112,48 +78,29 @@ export default {
       .sd-progress-fill{ height:100%; width:0%; background:linear-gradient(90deg, var(--accentA), var(--accentB)); transition:width .2s ease; }
       .sd-progress-fill.done{ background:var(--done); }
 
-      .sd-stage{
-        width: var(--stageSize);
-        max-width: 100%;
-        margin: 10px auto 0;
-        display: flex;
-        flex-direction: column;
-        gap: var(--gap);
-        align-items: center;
-        justify-content: center;
-      }
-
-      .sd-board{
-        position:relative; display:grid; gap:2px;
-        width: 100%;
-        aspect-ratio: 1/1;
-        user-select:none;
-      }
+      .sd-stage{ width: var(--stageSize); max-width: 100%; margin: 10px auto 0; display:flex; flex-direction:column; gap:var(--gap); align-items:center; justify-content:center; }
+      .sd-board{ position:relative; display:grid; gap:2px; width:100%; aspect-ratio:1/1; user-select:none; }
       .sd-board:focus{ outline:none; }
       .sd-rc-line{ position:absolute; background:var(--rowcol); pointer-events:none; z-index:5; border-radius:8px; display:none; }
-      .sd-rowline{ left:0; right:0; height:auto; }
-      .sd-colline{ top:0; bottom:0; width:auto; }
+      .sd-rowline{ left:0; right:0; height:auto; } .sd-colline{ top:0; bottom:0; width:auto; }
 
-      .sd-cell{
-        position:relative; display:grid; place-items:center; aspect-ratio:1/1;
-        border:1px solid var(--ring); border-radius:10px;
-        background:var(--panel);
+      .sd-cell{ position:relative; display:grid; place-items:center; aspect-ratio:1/1;
+        border:1px solid var(--ring); border-radius:10px; background:var(--panel);
         font-variant-numeric:tabular-nums;
         transition: background 120ms ease, box-shadow 120ms ease, border-color 120ms ease, opacity 120ms ease, transform 120ms ease, translate 120ms ease;
         will-change: background, box-shadow, transform, translate, opacity;
         overflow:hidden;
       }
       .sd-cell:hover{ background:rgba(255,255,255,.05); }
-
       .sd-num{ font-size: clamp(14px, calc(var(--stageSize) / 20), 34px); line-height:1; }
       .sd-num.given{ color:#d0e1ff; font-weight:800; letter-spacing:.2px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
       .sd-num.user{ color:#ffffff; font-family: 'Patrick Hand', cursive, ui-sans-serif, system-ui; font-weight:500; letter-spacing:.1px; }
       .sd-sol{ font-size: clamp(14px, calc(var(--stageSize) / 20), 34px); line-height:1; font-weight:900; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, "Helvetica Neue", Arial, "Noto Sans", sans-serif; color:#ffffff; }
 
       .sd-cell.selected{ box-shadow:0 0 0 3px var(--ring) inset, 0 0 0 1px rgba(255,255,255,.06); transform:scale(1.04); translate:0 -1px; }
-      .sd-cell.sibling{ background:var(--peer) !important; }
-      .sd-cell.match{ background:var(--match) !important; }
-      .sd-cell.cand{ background:var(--cand) !important; }
+      .sd-cell.sibling{ background:var(--peer)!important; }
+      .sd-cell.match{ background:var(--match)!important; }
+      .sd-cell.cand{ background:var(--cand)!important; }
       .sd-cell.boxAlt:not(.selected):not(.match):not(.sibling):not(.cand){ background:rgba(255,255,255,.05); }
       .sd-cell.bT{ border-top-width:4px; } .sd-cell.bL{ border-left-width:4px; }
       .sd-cell.bR{ border-right-width:4px; } .sd-cell.bB{ border-bottom-width:4px; }
@@ -162,22 +109,21 @@ export default {
       .sd-cands span{ width:100%; text-align:center; }
 
       .sd-ovl{ position:absolute; inset:0; border-radius:10px; pointer-events:none; z-index:20; opacity:0; transition: opacity var(--errFadeMs) ease-out; }
-      .sd-ovl.err-scope.show{ opacity:1; background: var(--errScope) !important; }
-      .sd-ovl.err-peer.show{  opacity:1; background: var(--errFill) !important; box-shadow: 0 0 0 3px var(--err) inset !important; }
-      .sd-ovl.err-cell.show{  opacity:1; background: var(--errFill) !important; box-shadow: 0 0 0 4px var(--err) inset !important; }
+      .sd-ovl.err-scope.show{ opacity:1; background: var(--errScope)!important; }
+      .sd-ovl.err-peer.show{  opacity:1; background: var(--errFill)!important; box-shadow: 0 0 0 3px var(--err) inset!important; }
+      .sd-ovl.err-cell.show{  opacity:1; background: var(--errFill)!important; box-shadow: 0 0 0 4px var(--err) inset!important; }
 
       .sd-ovl.cele-scope{ transition: opacity var(--celeFadeMs) ease-out; }
       .sd-ovl.cele-scope.show{ opacity:1; background: var(--celeScope); }
 
-      @keyframes wrongDigitFade { 0% { opacity:1; transform:scale(1.02); } 100% { opacity:0; transform:scale(0.95); } }
+      @keyframes wrongDigitFade { 0%{ opacity:1; transform:scale(1.02);} 100%{ opacity:0; transform:scale(0.95);} }
       .sd-num.user.wrongfade{ animation: wrongDigitFade var(--errFadeMs) ease-out forwards; }
 
       @keyframes unitPop { 0%{ transform:scale(1); box-shadow:0 0 0 0 rgba(80,200,140,.0) inset; } 40%{ transform:scale(1.03); box-shadow:0 0 0 4px rgba(80,200,140,.28) inset; } 100%{ transform:scale(1); box-shadow:0 0 0 0 rgba(80,200,140,0) inset; } }
       .sd-complete{ animation:unitPop 520ms ease-out; }
-      @keyframes digitTwirl { 0%{ transform:scale(1) rotate(0deg); } 40%{ transform:scale(1.08) rotate(6deg); } 100%{ transform:scale(1) rotate(0deg); } }
+      @keyframes digitTwirl { 0%{ transform:scale(1) rotate(0deg);} 40%{ transform:scale(1.08) rotate(6deg);} 100%{ transform:scale(1) rotate(0deg);} }
       .sd-num.twirl{ animation:digitTwirl 520ms ease-out; transform-origin:center; }
 
-      /* Unit-complete juice (sweep + digit celebrate + halo burst) */
       @keyframes sdSweep { from { background-position: -150% 0; } to { background-position: 150% 0; } }
       .sd-ovl.sweep { opacity: 0; background: linear-gradient(90deg, rgba(255,255,255,0), rgba(130,200,255,.22), rgba(255,255,255,0)); background-size: 200% 100%; transition: opacity var(--celeFadeMs) ease-out; }
       .sd-ovl.sweep.show { opacity: 1; animation: sdSweep 560ms ease-out; }
@@ -186,7 +132,7 @@ export default {
       @keyframes sdBurst { 0%{ transform: translate(-50%,-50%) scale(.20); opacity:.9;} 100%{ transform: translate(-50%,-50%) scale(1.45); opacity:0;} }
       .sd-burst { position:absolute; left:50%; top:50%; width:62%; height:62%; border-radius:50%; pointer-events:none; box-shadow: 0 0 0 2px rgba(130,200,255,.35), 0 0 18px rgba(130,200,255,.45), inset 0 0 12px rgba(130,200,255,.18); animation: sdBurst 600ms ease-out forwards; mix-blend-mode: screen; }
 
-      .sd-hotel{ display:flex; gap: clamp(6px, calc(var(--stageSize)/90), 10px); flex-wrap:wrap; align-items:center; justify-content:center; margin-top: 2px; width: 100%; }
+      .sd-hotel{ display:flex; gap: clamp(6px, calc(var(--stageSize)/90), 10px); flex-wrap:wrap; align-items:center; justify-content:center; margin-top:2px; width:100%; }
       .sd-hbtn{ display:inline-flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; min-width: clamp(34px, calc(var(--stageSize)/12), 62px); padding: clamp(6px, calc(var(--stageSize)/70), 10px) clamp(8px, calc(var(--stageSize)/60), 12px); border-radius:12px; background:rgba(255,255,255,.05); border:1px solid var(--ring); color:var(--fg); cursor:pointer; user-select:none; transition:transform .06s ease, background .12s ease, opacity .12s ease, outline .12s ease; }
       .sd-hbtn:hover{ background:rgba(255,255,255,.08); }
       .sd-hbtn:active{ transform:translateY(1px); }
@@ -210,38 +156,27 @@ export default {
       .sd-tipbtn:disabled{ opacity:.28; cursor:default; }
       .sd-tipbtn:hover:not(:disabled){ background:rgba(255,255,255,.10); }
 
-      .sd-audio-gate{ position:absolute; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; z-index:10000; color:var(--fg); font-size:14px; cursor:pointer; }
+      /* replace the old .sd-audio-gate with this */
+      .sd-audio-gate{
+        position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+        z-index:10000;
+        /* IMPORTANT: let clicks pass through the backdrop */
+        pointer-events:none;
+      }
+
+      /* new: the only clickable thing (small centered pill) */
+      .sd-audio-gate .sd-audio-btn{
+        pointer-events:auto;
+        padding:10px 14px; border-radius:999px; font-size:13px;
+        background:rgba(0,0,0,.65); color:var(--fg);
+        border:1px solid var(--ring); cursor:pointer;
+        backdrop-filter: blur(3px);
+      }
+
+      /* allow JS to hide it without layout thrash */
+      .sd-audio-gate.hidden{ display:none; }
 
       .sd-fx{ position:absolute; inset:0; z-index:var(--fxZ); pointer-events:none; display:block; }
-
-      /* Coach overlay (mask + card) */
-      .sd-coach{ position:fixed; inset:0; z-index:var(--maskZ); pointer-events:none; }
-      .sd-coach.hidden{ display:none; }
-      .sd-coach svg{ position:absolute; inset:0; width:100%; height:100%; }
-      .sd-mask-dim{ fill: rgba(10,14,22,.66); }
-      .sd-mask-blur{ filter: var(--blurMask); }
-      .sd-coach-card{
-        position:absolute; z-index:var(--coachZ);
-        pointer-events:auto; max-width:min(380px, 92vw);
-        background:rgba(20,24,32,.98); color:var(--fg);
-        border:1px solid var(--ring); border-radius:12px; padding:10px 12px;
-        box-shadow:0 8px 24px rgba(0,0,0,.35); transform-origin: top left;
-        transition: transform .16s ease, opacity .16s ease;
-      }
-      .sd-coach-card h4{ margin:0 0 6px; font-size:14px; }
-      .sd-coach-card p{ margin:0 0 8px; font-size:12px; color:var(--muted); min-height:1.1em; }
-      .sd-coach-card .actions{ display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; }
-      .coach-hot{ position:relative; z-index:var(--hotZ) !important; }
-
-      /* Dock mode (phones) */
-      .sd-coach.dock .sd-coach-card{
-        left: 8px !important; right: 8px !important; bottom: 8px !important; top: auto !important;
-        max-width: none; width: auto;
-      }
-
-      /* Typewriter caret (optional minimalist) */
-      .tw-caret::after{ content:''; display:inline-block; width:6px; height:1em; margin-left:2px; background:currentColor; opacity:.65; animation: twBlink 1s steps(2,end) infinite; vertical-align:-.15em; }
-      @keyframes twBlink { 0%,49%{opacity:.0;} 50%,100%{opacity:.65;} }
 
       @media (max-width: 420px) {
         .sd-controls { gap:6px; }
@@ -252,35 +187,44 @@ export default {
 
     const wrap = document.createElement('div'); wrap.className='sd-wrap'; root.appendChild(wrap);
 
-    const audioGate = document.createElement('div'); audioGate.className='sd-audio-gate'; audioGate.textContent='Tap to enable sound'; wrap.appendChild(audioGate);
+    // Audio unlock overlay (non-blocking)
+    const audioGate = document.createElement('div');
+    audioGate.className = 'sd-audio-gate hidden';
+    audioGate.innerHTML = `<button type="button" class="sd-audio-btn">Tap to enable sound</button>`;
+    wrap.appendChild(audioGate);
+
+    const audioBtn = audioGate.querySelector('.sd-audio-btn');
 
     function updateAudioGate(){
-      if(Tone.context && Tone.context.state !== 'running') audioGate.style.display='flex';
-      else audioGate.style.display='none';
+      try{
+        const suspended = !!Tone.context && Tone.context.state !== 'running';
+        const shouldShow = !audioReady || suspended;
+        audioGate.classList.toggle('hidden', !shouldShow);
+      }catch{
+        audioGate.classList.add('hidden');
+      }
     }
-    audioGate.addEventListener('click', async ()=>{ await ensureAudioReady(); updateAudioGate(); });
+
+    // Clicking the pill tries to unlock, then gets out of the way either way.
+    // (We also keep the global first-gesture unlock you already set up.)
+    audioBtn.addEventListener('click', async (e)=>{
+      e.stopPropagation();
+      await ensureAudioReady(true);
+      updateAudioGate();  // hides if running, otherwise stays visible but non-blocking
+    });
+
 
     // FX Canvas (confetti)
     const fxCanvas = document.createElement('canvas'); fxCanvas.className='sd-fx';
     wrap.appendChild(fxCanvas);
     let confetti = null;
 
-    // Coach (Tutorial 6.0)
-    const coach = document.createElement('div'); coach.className='sd-coach hidden';
-    // SVG mask with multi-holes
-    coach.innerHTML = `
-      <svg aria-hidden="true">
-        <defs>
-          <mask id="sd-mask" maskUnits="userSpaceOnUse">
-            <rect x="0" y="0" width="100%" height="100%" fill="white"></rect>
-            <!-- dynamic holes inserted here as <rect> or <path> with fill="black" -->
-          </mask>
-        </defs>
-        <rect class="sd-mask-dim sd-mask-blur" x="0" y="0" width="100%" height="100%" mask="url(#sd-mask)"></rect>
-      </svg>
-    `;
-    document.body.appendChild(coach);
-    const coachCard = document.createElement('div'); coachCard.className='sd-coach-card'; coachCard.style.opacity='0'; coach.appendChild(coachCard);
+    // Declare coach early as a no-op stub to avoid TDZ during setup
+    let coach = {
+      start(){}, stop(){}, isActive(){ return false; }, allow(){ return true; },
+      react(){}, handleResize(){}, queueReposition(){}
+    };
+
 
     // ------------------------------ Top bar & controls ---------------------------
     const topbar = document.createElement('div'); topbar.className='sd-topbar'; wrap.appendChild(topbar);
@@ -312,6 +256,9 @@ export default {
     const btnCheck     = mkBtn('🧪','Check','Highlight wrong entries');
     const btnEraseWrong= mkBtn('🧹','Erase wrong','Erase all wrong non-given entries');
     const btnTutorial  = mkBtn('🎓','Tutorial','Show tutorial');
+    const btnSfx       = mkBtn('🔊','SFX','Toggle sound effects');
+    const btnMusic     = mkBtn('🎵','Music','Toggle music');
+    const btnFullscreen= mkBtn('⛶','Fullscreen','Toggle fullscreen'); btnFullscreen.dataset.coachFs='1';
 
     // Help popover (closed by default)
     const popWrap = document.createElement('div'); popWrap.className='sd-pop-wrap';
@@ -319,15 +266,11 @@ export default {
     const pop = document.createElement('div'); pop.className='sd-pop';
     popWrap.append(btnSettings, pop);
 
-    // Audio toggles
-    const btnSfx   = mkBtn('🔊','SFX','Toggle sound effects');
-    const btnMusic = mkBtn('🎵','Music','Toggle music');
-
     controls.append(
       selDiff, selVariant,
       btnNew, btnDaily, btnStartOver,
       btnHint, btnUndo, btnRedo, btnCheck, btnEraseWrong,
-      btnTutorial, btnSfx, btnMusic, popWrap
+      btnTutorial, btnSfx, btnMusic, btnFullscreen, popWrap
     );
 
     const status = document.createElement('div'); status.className='sd-status'; status.setAttribute('aria-live','polite'); status.textContent='';
@@ -367,8 +310,9 @@ export default {
     confetti = makeConfetti(fxCanvas, { duration: 6 });
 
     // --------------------------- Variant & Difficulty State ----------------------
-    const STORAGE_NS='sudoku:minimal:v31';
+    const STORAGE_NS='sudoku:minimal:v32';
     const prefsKey = `${STORAGE_NS}:prefs`;
+    const timesKey = `${STORAGE_NS}:times`;
     const tutSeenKey = 'sudoku:tutorial:seen'; // durable across versions
 
     // Quota-safe set
@@ -378,19 +322,17 @@ export default {
         return true;
       }catch(e){
         if (e && (e.name==='QuotaExceededError' || e.name==='NS_ERROR_DOM_QUOTA_REACHED')){
-          // Evict some old Sudoku saves under this namespace (keep prefs + most recent)
+          // opportunistic eviction of old saves of this namespace (keep prefs + most recent 5)
           try{
             const keys = [];
             for(let i=0;i<localStorage.length;i++){
               const key = localStorage.key(i);
               if(!key) continue;
-              if(key.startsWith(STORAGE_NS+':') && key!==prefsKey){
+              if(key.startsWith(STORAGE_NS+':') && key!==prefsKey && key!==timesKey){
                 keys.push(key);
               }
             }
-            // Remove up to 5 older arbitrary saves
             keys.slice(0,5).forEach(key=> localStorage.removeItem(key));
-            // Try again
             localStorage.setItem(k,v);
             setStatus('Storage was full—cleared some old Sudoku saves.');
             return true;
@@ -424,21 +366,25 @@ export default {
     selDiff.value = difficulty;
 
     // ----------------------------- Audio (Unlocker + Tone) ----------------------
-    let tinyFallback = null; // emergency UI blips only (created after unlock)
-
+    let tinyFallback = null;
     let audioReady = false;
     let audioInitPromise = null;
 
-    // placeholders until audio is unlocked
     let sfx = { clickSoft(){}, select(){}, move(){}, place(){}, clear(){}, hint(){}, error(){}, unit(){}, solve(){}, toggle(){}, drag(){}, hover(){} };
     let music = { setEnabled(){} };
 
-    function ensureAudioReady(){
-      if(audioReady) return Promise.resolve(true);
+    async function ensureAudioReady(forceResume=false){
+      if(audioReady){
+        try{
+          if(forceResume && Tone.context?.state!=='running') await Tone.context.resume();
+        }catch{}
+        return true;
+      }
       if(audioInitPromise) return audioInitPromise;
 
       audioInitPromise = (async ()=>{
         try{
+          // explicit unlock on demand
           await Tone.start();
           if (Tone.context && Tone.context.state !== 'running'){
             try{ await Tone.context.resume(); }catch{}
@@ -447,10 +393,9 @@ export default {
           sfx = makeSfxEngineTone(prefs, save, tinyFallback, () => audioReady, ensureAudioReady);
           music = makeLofiMusicToneOrMP3_Lazy(prefs, save, () => audioReady, ensureAudioReady, setStatus);
           audioReady = true;
-          // Respect stored preference
           music.setEnabled(!!prefs.audio.music);
         }catch(e){
-          console.warn('Audio unlock failed', e);
+          // keep quiet; overlay will remain visible until a real gesture starts it
           audioReady = false;
         }finally{
           audioInitPromise = null;
@@ -462,12 +407,12 @@ export default {
       return audioInitPromise;
     }
 
-    // One-time global unlock on first real gesture
+    // Unlock on first gesture AND on the audioGate click
     const tryUnlockOnce = ()=>{
       wrap.removeEventListener('pointerdown', tryUnlockOnce, true);
       wrap.removeEventListener('keydown', tryUnlockOnce, true);
       wrap.removeEventListener('touchstart', tryUnlockOnce, true);
-      ensureAudioReady().then(updateAudioGate);
+      ensureAudioReady(true).then(updateAudioGate);
     };
     wrap.addEventListener('pointerdown', tryUnlockOnce, true);
     wrap.addEventListener('keydown', tryUnlockOnce, true);
@@ -486,31 +431,14 @@ export default {
     let hotelDigit=null;
     let showSolutionHold=false;
 
-    // tutorial state
-    let coachActive=false;
-    let coachStepIdx=0;
-    let coachSceneRestore=null;
-    let coachTimers=[];
-    let coachAllow = null; // function(eventKind, payload) -> boolean
-    let coachDeepDive=false;
-    let coachIdleTimer=null;
-    let coachNextVisible=false;
-    let coachGoalAt=null;
-    let coachRepositionRAF=null;
-    let coachObservedNodes=new Set();
-    const reaction = makeReactionPools();
-    // --- Coach hook (global no-op until the tutorial starts) ---
-    let coachReact = function /* global coach hook */ (/* kind */) { /* no-op */ };
-
-
-    // time / saving
-    let started=performance.now(), pausedAcc=0, pauseStart=null;
-    let currentSeed=null, isDaily=false;
-
     // errors
     const wrongFadeLocks = new Set();
     let activeErr = null;
     let errorLock = false;
+
+    // time / saving
+    let started=performance.now(), pausedAcc=0, pauseStart=null;
+    let currentSeed=null, isDaily=false;
 
     // RNG
     function xmur3(str){ let h=1779033703^str.length; for(let i=0;i<str.length;i++){ h=Math.imul(h^str.charCodeAt(i),3432918353); h=(h<<13)|(h>>>19);} return function(){ h=Math.imul(h^(h>>>16),2246822507); h=Math.imul(h^(h>>>13),3266489909); h^=h>>>16; return h>>>0; }; }
@@ -519,18 +447,8 @@ export default {
     function makeRng(seedInt){ return mulberry32(seedInt>>>0); }
 
     // ---------------------------- Symbols & parsing ------------------------------
-    function mkSymbols(n){
-      const arr=[]; for(let i=1;i<=Math.min(9,n);i++) arr.push(String(i));
-      for(let v=10; v<=n; v++) arr.push(String.fromCharCode(55+v));
-      return arr;
-    }
-    function symToVal(ch){
-      const u=(ch||'').toUpperCase();
-      if(/^[1-9]$/.test(u)) return Number(u);
-      const code=u.charCodeAt(0);
-      if(code>=65 && code<=90) return code-55;
-      return NaN;
-    }
+    function mkSymbols(n){ const arr=[]; for(let i=1;i<=Math.min(9,n);i++) arr.push(String(i)); for(let v=10; v<=n; v++) arr.push(String.fromCharCode(55+v)); return arr; }
+    function symToVal(ch){ const u=(ch||'').toUpperCase(); if(/^[1-9]$/.test(u)) return Number(u); const code=u.charCodeAt(0); if(code>=65 && code<=90) return code-55; return NaN; }
     function valToSym(v){ return SYMBOLS[v-1] || String(v); }
 
     // ---------------------- Generator / solver helpers --------------------------
@@ -595,8 +513,8 @@ export default {
       wrap.style.setProperty('--stageSize', s + 'px');
 
       syncFxCanvasToWrap();
-      confetti.resize();
-      queueCoachReposition();
+      if (confetti) confetti.resize();
+      coach?.queueReposition?.();
     }
     function syncFxCanvasToWrap(){
       const rect = wrap.getBoundingClientRect();
@@ -607,7 +525,7 @@ export default {
       fxCanvas.width  = Math.floor(rect.width * dpr);
       fxCanvas.height = Math.floor(rect.height * dpr);
     }
-    const ro = new ResizeObserver(()=> { syncFxCanvasToWrap(); confetti.resize(); sizeStage(); });
+    const ro = new ResizeObserver(()=> { sizeStage(); });
     ro.observe(wrap);
 
     // --------------------------------- Setup / Reset -----------------------------
@@ -615,7 +533,7 @@ export default {
       isDaily = daily;
       if(daily){
         const d=new Date(); const ds=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-        currentSeed = seedFromString(`daily:${ds}:${difficulty}:${currentVariant.key}:SudokuV31`);
+        currentSeed = seedFromString(`daily:${ds}:${difficulty}:${currentVariant.key}:SudokuV32`);
       }else{
         currentSeed = seed ?? (typeof crypto!=='undefined'&&crypto.getRandomValues
           ? crypto.getRandomValues(new Uint32Array(1))[0] : (Date.now()>>>0));
@@ -637,12 +555,10 @@ export default {
       setStatus(daily ? `Daily ${labelForDiff(difficulty)} — ${currentVariant.label}.` : `New ${labelForDiff(difficulty)} — ${currentVariant.label}.`);
       save();
       updateHelpUI(); updateTime();
-      queueCoachReposition();
+      coach?.queueReposition?.();
     }
 
-    function layoutBoardForVariant(){
-      board.style.gridTemplateColumns = `repeat(${N}, 1fr)`;
-    }
+    function layoutBoardForVariant(){ board.style.gridTemplateColumns = `repeat(${N}, 1fr)`; }
 
     function buildHotel(){
       hotel.innerHTML='';
@@ -656,14 +572,13 @@ export default {
         b.setAttribute('draggable','true');
 
         b.addEventListener('dragstart', e=>{
-          if(coachActive && !coachAllow?.('dragstart', {n:idx})) { e.preventDefault(); return; }
+          if(coach.isActive() && !coach.allow('dragstart', {n:idx})) { e.preventDefault(); return; }
           e.dataTransfer.setData('text/plain', String(idx)); e.dataTransfer.effectAllowed='copy';
-          pingSfx('drag');
-          coachReact('drag');
+          pingSfx('drag'); coach.react('drag');
         });
 
         b.addEventListener('click', async ()=>{
-          if(coachActive && !coachAllow?.('hotelClick', {n:idx})) return;
+          if(coach.isActive() && !coach.allow('hotelClick', {n:idx})) return;
           hideTip();
           if (sel && !given[sel.r][sel.c] && grid[sel.r][sel.c]===0){
             attemptPlace(sel.r, sel.c, idx, true);
@@ -672,8 +587,7 @@ export default {
             hotelDigit = (hotelDigit===idx ? null : idx);
             draw();
           }
-          pingSfx('select');
-          coachReact('hotel');
+          pingSfx('select'); coach.react('hotel');
         });
         hotel.appendChild(b);
       }
@@ -683,16 +597,16 @@ export default {
       bClear.append(xnum, xcnt);
       bClear.setAttribute('draggable','true');
       bClear.addEventListener('dragstart', e=>{
-        if(coachActive && !coachAllow?.('dragstart', {n:0})) { e.preventDefault(); return; }
+        if(coach.isActive() && !coach.allow('dragstart', {n:0})) { e.preventDefault(); return; }
         e.dataTransfer.setData('text/plain','clear'); e.dataTransfer.effectAllowed='copy';
-        pingSfx('drag'); coachReact('dragClear');
+        pingSfx('drag'); coach.react('dragClear');
       });
       bClear.addEventListener('click', ()=>{
-        if(coachActive && !coachAllow?.('hotelClear', {})) return;
+        if(coach.isActive() && !coach.allow('hotelClear', {})) return;
         hideTip();
         if (sel && !given[sel.r][sel.c]){ record(sel.r, sel.c, {val:0}); draw(); }
         else { hotelDigit = (hotelDigit===0 ? null : 0); draw(); }
-        pingSfx('select'); coachReact('clear');
+        pingSfx('select'); coach.react('clear');
       });
       hbtns.clear = bClear;
       hotel.appendChild(bClear);
@@ -741,12 +655,12 @@ export default {
     }
     function place(r,c,v){
       record(r,c,{val:v});
-      pingSfx('place');
-      coachReact('place');
+      pingSfx('place'); coach.react('place');
       if(isSolved()){
-        setStatus('Solved! 🎉'); pfill.classList.add('done');
-        pingSfx('solve');
-        burstConfettiFromBoard();
+        const ms = (pauseStart?pauseStart:performance.now())-started+pausedAcc;
+        setStatus(`Solved in ${fmtTime(ms)} 🎉`); pfill.classList.add('done');
+        pingSfx('solve'); burstConfettiFromBoard();
+        persistFinishTime(ms);
       }
     }
     function clearCellNoUndo(r,c){
@@ -757,12 +671,11 @@ export default {
       grid = clone(puzzleInitial);
       given=grid.map(r=>r.map(v=>v!==0));
       undoStack.length=0; redoStack.length=0; sel=null; hotelDigit=null; showSolutionHold=false;
-      wrongFadeLocks.clear();
-      activeErr = null; errorLock=false;
+      wrongFadeLocks.clear(); activeErr = null; errorLock=false;
       draw(); save();
     }
-    function doUndo(){ const t=undoStack.pop(); if(!t) return; applyCell(t.r,t.c,t.before); redoStack.push(t); sel={r:t.r,c:t.c}; setStatus(''); draw(); save(); pingSfx('undo'); coachReact('undo'); }
-    function doRedo(){ const t=redoStack.pop(); if(!t) return; applyCell(t.r,t.c,t.after); undoStack.push(t); sel={r:t.r,c:t.c}; setStatus(''); draw(); save(); pingSfx('redo'); coachReact('redo'); }
+    function doUndo(){ const t=undoStack.pop(); if(!t) return; applyCell(t.r,t.c,t.before); redoStack.push(t); sel={r:t.r,c:t.c}; setStatus(''); draw(); save(); pingSfx('undo'); coach.react('undo'); }
+    function doRedo(){ const t=redoStack.pop(); if(!t) return; applyCell(t.r,t.c,t.after); undoStack.push(t); sel={r:t.r,c:t.c}; setStatus(''); draw(); save(); pingSfx('redo'); coach.react('redo'); }
 
     function saveKey(){ return `${STORAGE_NS}:${currentVariant.key}:${difficulty}:${isDaily?'daily':'rng'}:${currentSeed}`; }
     function save(){
@@ -788,12 +701,11 @@ export default {
         if (d.prefs) prefs=d.prefs;
 
         undoStack.length=0; redoStack.length=0; sel=null; hotelDigit=null; showSolutionHold=false;
-        wrongFadeLocks.clear();
-        activeErr = null; errorLock=false;
-        layoutBoardForVariant();
-        buildHotel();
-        sizeStage();
-        draw(); setStatus(isDaily?'Resumed daily puzzle.':'Resumed saved puzzle.'); updateHelpUI(); reflectAudioButtons(); music.setEnabled(!!prefs.audio.music); return true;
+        wrongFadeLocks.clear(); activeErr = null; errorLock=false;
+        layoutBoardForVariant(); buildHotel(); sizeStage(); draw();
+        setStatus(isDaily?'Resumed daily puzzle.':'Resumed saved puzzle.');
+        updateHelpUI(); reflectAudioButtons(); music.setEnabled(!!prefs.audio.music);
+        return true;
       }catch{ return false; }
     }
 
@@ -884,7 +796,7 @@ export default {
 
         // interactions
         cell.addEventListener('click', ()=>{
-          if(coachActive && !coachAllow?.('cellClick', {r,c})) return;
+          if(coach.isActive() && !coach.allow('cellClick', {r,c})) return;
           hideTip();
           const wasSel = sel && sel.r===r && sel.c===c;
           sel={r,c};
@@ -895,13 +807,12 @@ export default {
             }
           }
           board.focus(); draw();
-          pingSfx('select');
-          coachReact(wasSel?'reselect':'select');
+          pingSfx('select'); coach.react(wasSel?'reselect':'select');
         });
 
         cell.addEventListener('contextmenu', (e)=>{
           e.preventDefault();
-          if(coachActive && !coachAllow?.('context', {r,c})) return;
+          if(coach.isActive() && !coach.allow('context', {r,c})) return;
           hideTip();
           if(showSolutionHold) return;
           if(grid[r][c]) return;
@@ -909,32 +820,31 @@ export default {
           if(stickyCands.has(key)) stickyCands.delete(key);
           else stickyCands.set(key, candidatesFor(r,c));
           draw();
-          pingSfx('select');
-          coachReact('tip');
+          pingSfx('select'); coach.react('tip');
         });
 
         cell.addEventListener('dragenter', e=>{
           e.preventDefault();
-          if(coachActive && !coachAllow?.('dragenter', {r,c})) return;
-          cell.classList.add('sd-drop-hover'); pingSfx('hover'); coachReact('dragHover');
+          if(coach.isActive() && !coach.allow('dragenter', {r,c})) return;
+          cell.classList.add('sd-drop-hover'); pingSfx('hover'); coach.react('dragHover');
         });
         cell.addEventListener('dragover', e=>{
-          if(coachActive && !coachAllow?.('dragover', {r,c})) return;
+          if(coach.isActive() && !coach.allow('dragover', {r,c})) return;
           e.preventDefault(); e.dataTransfer.dropEffect='copy';
         });
         cell.addEventListener('dragleave', ()=>{
-          if(coachActive && !coachAllow?.('dragleave', {r,c})) return;
+          if(coach.isActive() && !coach.allow('dragleave', {r,c})) return;
           cell.classList.remove('sd-drop-hover'); pingSfx('hover');
         });
         cell.addEventListener('drop', e=>{
-          if(coachActive && !coachAllow?.('drop', {r,c})) return;
+          if(coach.isActive() && !coach.allow('drop', {r,c})) return;
           e.preventDefault(); cell.classList.remove('sd-drop-hover');
           if(showSolutionHold) return;
           const data = e.dataTransfer.getData('text/plain');
-          if(data==='clear'){ if(!given[r][c]) record(r,c,{val:0}); draw(); pingSfx('place'); coachReact('dropClear'); return; }
+          if(data==='clear'){ if(!given[r][c]) record(r,c,{val:0}); draw(); pingSfx('place'); coach.react('dropClear'); return; }
           let n = Number(data);
           if(!Number.isInteger(n)) n = symToVal(data);
-          if(Number.isInteger(n) && n>=1 && n<=N){ attemptPlace(r,c,n,false); draw(); coachReact('dropPlace'); }
+          if(Number.isInteger(n) && n>=1 && n<=N){ attemptPlace(r,c,n,false); draw(); coach.react('dropPlace'); }
         });
 
         board.appendChild(cell);
@@ -972,7 +882,7 @@ export default {
       }
 
       updateTime();
-      queueCoachReposition();
+      coach.queueReposition();
     }
 
     function ovlAt(r,c){ return board.querySelector(`.sd-cell[data-r="${r}"][data-c="${c}"] .sd-ovl`); }
@@ -1001,7 +911,6 @@ export default {
       }
     }
 
-    // enhanced celebration with sweep + digit celebrate + halo burst
     function animateUnit(type, idx){
       const cells = [];
       if(type==='row'){ for(let c=0;c<N;c++) cells.push([idx,c]); }
@@ -1010,31 +919,23 @@ export default {
         const br=(Math.floor(idx/(N/BC)))*BR, bc=(idx%(N/BC))*BC;
         for(let r=br;r<br+BR;r++) for(let c=bc;c<bc+BC;c++) cells.push([r,c]);
       }
-
-      // celebratory scope + sweep + twirl + burst
       for(const [r,c] of cells){
         const o = ovlAt(r,c);
         if(o){
-          o.classList.add('cele-scope','show');
-          setTimeout(()=> o.classList.remove('show'), CELE_FADE_MS);
+          o.classList.add('cele-scope','show'); setTimeout(()=> o.classList.remove('show'), CELE_FADE_MS);
           setTimeout(()=> o.classList.remove('cele-scope'), CELE_FADE_MS+50);
-          o.classList.add('sweep','show');
-          setTimeout(()=> o.classList.remove('show'), 560);
+          o.classList.add('sweep','show'); setTimeout(()=> o.classList.remove('show'), 560);
           setTimeout(()=> o.classList.remove('sweep'), 700);
         }
-        const el = boardCell(r,c);
-        if(!el) continue;
+        const el = boardCell(r,c); if(!el) continue;
         el.classList.add('sd-complete');
-        const numEl = el.querySelector('.sd-num');
-        if(numEl){
+        const numEl = el.querySelector('.sd-num'); if(numEl){
           numEl.classList.add('cele','twirl');
           setTimeout(()=> numEl && numEl.classList.remove('cele'), 600);
           setTimeout(()=> numEl && numEl.classList.remove('twirl'), 560);
         }
         setTimeout(()=> el.classList.remove('sd-complete'), 560);
-        const burst = document.createElement('div');
-        burst.className = 'sd-burst';
-        el.appendChild(burst);
+        const burst = document.createElement('div'); burst.className = 'sd-burst'; el.appendChild(burst);
         setTimeout(()=> { burst.remove(); }, 620);
       }
     }
@@ -1066,12 +967,8 @@ export default {
         errorLock = true;
         requestAnimationFrame(()=> applyActiveErrorOverlay());
         attachWrongFadeExact(r,c,n);
-        pingSfx('error');
-        setTimeout(()=> {
-          activeErr = null;
-          clearActiveErrorVisuals();
-          errorLock = false;
-        }, ERR_FADE_MS);
+        pingSfx('error'); coach.react('error');
+        setTimeout(()=> { activeErr = null; clearActiveErrorVisuals(); errorLock = false; }, ERR_FADE_MS);
       }
 
       if (clearHotelOnSuccess) hotelDigit=null;
@@ -1086,9 +983,7 @@ export default {
       numEl.classList.add('wrongfade');
       wrongFadeLocks.add(`${r},${c}`);
       setTimeout(()=> {
-        if(grid[r][c] === n){
-          clearCellNoUndo(r,c);
-        }
+        if(grid[r][c] === n){ clearCellNoUndo(r,c); }
         wrongFadeLocks.delete(`${r},${c}`);
       }, ERR_FADE_MS);
     }
@@ -1107,9 +1002,7 @@ export default {
           const o = ovlAt(rr,cc); if(o){ o.classList.add('err-scope','show'); }
         }
       }
-      for(const [rr,cc] of peersSame){
-        const o = ovlAt(rr,cc); if(o){ o.classList.add('err-peer','show'); }
-      }
+      for(const [rr,cc] of peersSame){ const o = ovlAt(rr,cc); if(o){ o.classList.add('err-peer','show'); } }
       const me = ovlAt(r,c); if(me){ me.classList.add('err-cell','show'); }
     }
 
@@ -1124,8 +1017,8 @@ export default {
 
     // -------------------------------- Confetti ----------------------------------
     function burstConfettiFromBoard(){
-      syncFxCanvasToWrap();
-      confetti.resize();
+      if (!confetti) return;
+      syncFxCanvasToWrap(); confetti.resize();
       const wrapRect = wrap.getBoundingClientRect();
       const boardRect = board.getBoundingClientRect();
       const x = (boardRect.left - wrapRect.left) + boardRect.width/2;
@@ -1133,19 +1026,19 @@ export default {
       confetti.burst({ from:{ x, y }, count: 260 });
     }
 
+
     // -------------------------- Right-click candidate tip ------------------------
     function hideTip(){ tip.classList.remove('open'); clearTimeout(tip._timer); }
 
     // -------------------------------- Keyboard ----------------------------------
     const onKeyDown = (e)=>{
       if(!root.isConnected) return;
-
-      if(coachActive && !coachAllow?.('keydown', {e})) { e.preventDefault(); return; }
+      if(coach.isActive() && !coach.allow('keydown', {e})) { e.preventDefault(); return; }
 
       if((e.ctrlKey||e.metaKey) && !e.shiftKey && e.key.toLowerCase()==='z'){ e.preventDefault(); doUndo(); return; }
       if((e.ctrlKey||e.metaKey) && (e.key.toLowerCase()==='y' || (e.shiftKey && e.key.toLowerCase()==='z'))){ e.preventDefault(); doRedo(); return; }
 
-      if(e.key==='f' || e.key==='F'){ if(!showSolutionHold){ showSolutionHold=true; draw(); pingSfx('toggle'); coachReact('peek'); } }
+      if(e.key==='f' || e.key==='F'){ if(!showSolutionHold){ showSolutionHold=true; draw(); pingSfx('toggle'); coach.react('peek'); } }
 
       if(!sel) sel={r:0,c:0};
 
@@ -1154,21 +1047,21 @@ export default {
         if (dc!==0){ nc = c + dc; if (nc<0){ nc=N-1; nr=(r+N-1)%N; } else if (nc>N-1){ nc=0; nr=(r+1)%N; } }
         if (dr!==0){ nr = r + dr; if (nr<0) nr=N-1; if (nr>N-1) nr=0; }
         sel={r:nr,c:nc}; e.preventDefault(); draw();
-        pingSfx('move'); coachReact('move');
+        pingSfx('move'); coach.react('move');
       };
 
       if(e.key==='ArrowUp')    return move(-1,0);
       if(e.key==='ArrowDown')  return move(1,0);
       if(e.key==='ArrowLeft')  return move(0,-1);
       if(e.key==='ArrowRight') return move(0,1);
-      if(e.key==='Home')       { sel={r:sel.r,c:0}; e.preventDefault(); pingSfx('move'); coachReact('move'); return draw(); }
-      if(e.key==='End')        { sel={r:sel.r,c:N-1}; e.preventDefault(); pingSfx('move'); coachReact('move'); return draw(); }
-      if(e.key==='PageUp')     { sel={r:0,c:sel.c}; e.preventDefault(); pingSfx('move'); coachReact('move'); return draw(); }
-      if(e.key==='PageDown')   { sel={r:N-1,c:sel.c}; e.preventDefault(); pingSfx('move'); coachReact('move'); return draw(); }
-      if(e.key==='Escape'){ hideTip(); setStatus(''); e.preventDefault(); pingSfx('toggle'); coachReact('esc'); return draw(); }
+      if(e.key==='Home')       { sel={r:sel.r,c:0}; e.preventDefault(); pingSfx('move'); coach.react('move'); return draw(); }
+      if(e.key==='End')        { sel={r:sel.r,c:N-1}; e.preventDefault(); pingSfx('move'); coach.react('move'); return draw(); }
+      if(e.key==='PageUp')     { sel={r:0,c:sel.c}; e.preventDefault(); pingSfx('move'); coach.react('move'); return draw(); }
+      if(e.key==='PageDown')   { sel={r:N-1,c:sel.c}; e.preventDefault(); pingSfx('move'); coach.react('move'); return draw(); }
+      if(e.key==='Escape'){ hideTip(); setStatus(''); e.preventDefault(); pingSfx('toggle'); coach.react('esc'); return draw(); }
 
       if(!showSolutionHold && (e.key==='Backspace'||e.key==='Delete'||e.key==='0'||e.key===' ')){
-        const {r,c}=sel; if(!given[r][c]) record(r,c,{val:0}); e.preventDefault(); pingSfx('clear'); coachReact('clear'); return draw();
+        const {r,c}=sel; if(!given[r][c]) record(r,c,{val:0}); e.preventDefault(); pingSfx('clear'); coach.react('clear'); return draw();
       }
 
       if(!showSolutionHold){
@@ -1183,7 +1076,7 @@ export default {
     };
     const onKeyUp = (e)=>{
       if(!root.isConnected) return;
-      if(e.key==='f' || e.key==='F'){ if(showSolutionHold){ showSolutionHold=false; draw(); pingSfx('toggle'); coachReact('peekBack'); } }
+      if(e.key==='f' || e.key==='F'){ if(showSolutionHold){ showSolutionHold=false; draw(); pingSfx('toggle'); coach.react('peekBack'); } }
     };
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('keyup', onKeyUp, { passive:true });
@@ -1191,73 +1084,62 @@ export default {
     // ------------------------ Global click (clear transient) ---------------------
     document.addEventListener('mousedown', (e)=>{
       if (e.button!==0) return;
-      if(coachActive && !coachAllow?.('mousedown', {e})) { e.preventDefault(); return; }
+      if(coach.isActive() && !coach.allow('mousedown', {e})) { e.preventDefault(); return; }
       activeErr = null;
       clearActiveErrorVisuals();
       hideTip();
     }, true);
 
-    // IMPORTANT FIX: preserve selection when clicking hotel buttons
+    // De-select when clicking outside board/hotel (and preserve selection when using hotel)
     document.addEventListener('mousedown', (e)=>{
-      if (!wrap.contains(e.target)) {
-        sel=null; hideTip(); draw(); return;
-      }
+      if (!wrap.contains(e.target)) { sel=null; hideTip(); draw(); return; }
       const isCell   = !!e.target.closest('.sd-cell');
       const isHotelB = !!e.target.closest('.sd-hbtn');
-
-      if (!isCell && !isHotelB) {
-        sel=null; hideTip(); draw(); return;
-      }
+      if (!isCell && !isHotelB) { sel=null; hideTip(); draw(); return; }
     });
 
     // ------------------------------- Controls -----------------------------------
-    btnNew.addEventListener('click', ()=>{ if(coachActive && !coachAllow?.('new')) return; hideTip(); sel=null; hotelDigit=null; resetGame({ daily:false }); pingSfx('toggle'); coachReact('new'); });
-    btnDaily.addEventListener('click', ()=>{ if(coachActive && !coachAllow?.('daily')) return; hideTip(); sel=null; hotelDigit=null; resetGame({ daily:true }); pingSfx('toggle'); coachReact('daily'); });
-    btnStartOver.addEventListener('click', ()=>{ if(coachActive && !coachAllow?.('startover')) return; hideTip(); clearToInitial(); setStatus('Reset to start.'); pingSfx('toggle'); coachReact('startOver'); });
-    btnUndo.addEventListener('click', ()=>{ if(coachActive && !coachAllow?.('undo')) return; hideTip(); doUndo(); });
-    btnRedo.addEventListener('click', ()=>{ if(coachActive && !coachAllow?.('redo')) return; hideTip(); doRedo(); });
-    btnHint.addEventListener('click', ()=>{ if(coachActive && !coachAllow?.('hint')) return; if(prefs.help.enabled && prefs.help.hints && !showSolutionHold) { doHint(true); pingSfx('hint'); coachReact('hint'); } });
-    btnCheck.addEventListener('click', ()=>{ if(coachActive && !coachAllow?.('check')) return; if(!prefs.help.mistakeFeedback) { checkWrongCellsFlash(); pingSfx('toggle'); coachReact('check'); } });
-    btnEraseWrong.addEventListener('click', ()=>{ if(coachActive && !coachAllow?.('erase')) return; if(!prefs.help.mistakeFeedback) { eraseWrongCells(); pingSfx('clear'); coachReact('erase'); } });
-
-    selDiff.addEventListener('change', ()=>{
-      if(coachActive && !coachAllow?.('diff')) { selDiff.value = difficulty; return; }
-      difficulty = selDiff.value;
-      prefs.difficulty = difficulty;
-      save();
-      sel=null; hotelDigit=null; hideTip();
-      resetGame({ daily:false });
-      coachReact('diff');
-    });
-    selVariant.addEventListener('change', ()=>{
-      if(coachActive && !coachAllow?.('variant')) { selVariant.value = currentVariant.key; return; }
-      const next = VARIANTS.find(v=>v.key===selVariant.value) || currentVariant;
-      prefs.variant = next.key;
-      currentVariant = next;
-      N=currentVariant.N; BR=currentVariant.BR; BC=currentVariant.BC; SYMBOLS=currentVariant.symbols;
-      save();
-      sel=null; hotelDigit=null; hideTip();
-      resetGame({ daily:false });
-      coachReact('variant');
-    });
-
-    // Audio buttons
+    btnNew.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('new')) return; hideTip(); sel=null; hotelDigit=null; resetGame({ daily:false }); pingSfx('toggle'); coach.react('new'); });
+    btnDaily.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('daily')) return; hideTip(); sel=null; hotelDigit=null; resetGame({ daily:true }); pingSfx('toggle'); coach.react('daily'); });
+    btnStartOver.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('startover')) return; hideTip(); clearToInitial(); setStatus('Reset to start.'); pingSfx('toggle'); coach.react('startOver'); });
+    btnUndo.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('undo')) return; hideTip(); doUndo(); });
+    btnRedo.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('redo')) return; hideTip(); doRedo(); });
+    btnHint.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('hint')) return; if(prefs.help.enabled && prefs.help.hints && !showSolutionHold) { doHint(true); pingSfx('hint'); coach.react('hint'); } });
+    btnCheck.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('check')) return; if(!prefs.help.mistakeFeedback) { checkWrongCellsFlash(); pingSfx('toggle'); coach.react('check'); } });
+    btnEraseWrong.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('erase')) return; if(!prefs.help.mistakeFeedback) { eraseWrongCells(); pingSfx('clear'); coach.react('erase'); } });
+    btnTutorial.addEventListener('click', ()=> coach.start(true));
     btnSfx.addEventListener('click', async ()=>{
-      if(coachActive && !coachAllow?.('sfx')) return;
+      if(coach.isActive() && !coach.allow('sfx')) return;
       prefs.audio.sfx = !prefs.audio.sfx; save(); reflectAudioButtons();
-      if (prefs.audio.sfx){ await ensureAudioReady(); sfx.clickSoft(); }
-      coachReact('sfx');
+      if (prefs.audio.sfx){ await ensureAudioReady(true); sfx.clickSoft(); }
+      coach.react('sfx');
     });
     btnMusic.addEventListener('click', async ()=>{
-      if(coachActive && !coachAllow?.('music')) return;
-      // Unlock within the same gesture if needed
-      await ensureAudioReady();
+      if(coach.isActive() && !coach.allow('music')) return;
+      await ensureAudioReady(true);
       prefs.audio.music = !prefs.audio.music; save(); reflectAudioButtons();
       music.setEnabled(prefs.audio.music);
-      sfx.clickSoft();
-      coachReact('music');
+      sfx.clickSoft(); coach.react('music');
     });
-    btnTutorial.addEventListener('click', ()=> startCoach(true));
+    btnFullscreen.addEventListener('click', async ()=>{
+      try{
+        if(!document.fullscreenElement){ await wrap.requestFullscreen?.(); } else { await document.exitFullscreen?.(); }
+        coach.react('fullscreen');
+      }catch{}
+    });
+
+    selDiff.addEventListener('change', ()=>{
+      if(coach.isActive() && !coach.allow('diff')) { selDiff.value = difficulty; return; }
+      difficulty = selDiff.value; prefs.difficulty = difficulty; save();
+      sel=null; hotelDigit=null; hideTip(); resetGame({ daily:false }); coach.react('diff');
+    });
+    selVariant.addEventListener('change', ()=>{
+      if(coach.isActive() && !coach.allow('variant')) { selVariant.value = currentVariant.key; return; }
+      const next = VARIANTS.find(v=>v.key===selVariant.value) || currentVariant;
+      prefs.variant = next.key; currentVariant = next;
+      N=currentVariant.N; BR=currentVariant.BR; BC=currentVariant.BC; SYMBOLS=currentVariant.symbols;
+      save(); sel=null; hotelDigit=null; hideTip(); resetGame({ daily:false }); coach.react('variant');
+    });
 
     // Help popover + settings
     function rebuildSettings(){
@@ -1273,6 +1155,20 @@ export default {
       pop.appendChild(row('Same-digit highlight', toggle(prefs.help.sameDigit, v=>{ prefs.help.sameDigit=v; save(); draw(); })));
       pop.appendChild(row('Row/Col bars (selection)', toggle(prefs.help.showRowColBars, v=>{ prefs.help.showRowColBars=v; save(); draw(); })));
 
+      // Best times (top 5 for current variant+diff)
+      const best = getBestTimes(currentVariant.key, difficulty).slice(0,5);
+      pop.appendChild(h('Best times (this mode)'));
+      const list = document.createElement('div');
+      if(best.length===0){ list.textContent = '—'; }
+      else{
+        best.forEach((t,i)=>{
+          const rowEl = document.createElement('div'); rowEl.className='sd-row';
+          rowEl.textContent = `${i+1}. ${fmtTime(t.ms)} — ${new Date(t.at).toLocaleDateString()}`;
+          list.appendChild(rowEl);
+        });
+      }
+      pop.appendChild(list);
+
       const reset = mkBtn('↺','Reset','Reset help to defaults'); reset.classList.add('sd-reset');
       reset.addEventListener('click', ()=>{
         prefs.help = { enabled:true, mistakeFeedback:true, showValidOnHotel:true, sameDigit:true, showRowColBars:true, hints:true };
@@ -1280,20 +1176,22 @@ export default {
         sfx.clickSoft();
       });
       const restartT = mkBtn('🎓','Restart tutorial','Restart guided tutorial');
-      restartT.addEventListener('click', ()=> startCoach(true));
+      restartT.addEventListener('click', ()=> coach.start(true));
       pop.appendChild(reset);
       pop.appendChild(restartT);
-      queueCoachReposition();
+      coach?.queueReposition?.();
+
     }
     rebuildSettings();
 
-    btnSettings.addEventListener('click', (e)=>{ if(coachActive && !coachAllow?.('settings')) return; e.stopPropagation(); pop.classList.toggle('open'); if(pop.classList.contains('open')) rebuildSettings(); sfx.clickSoft(); queueCoachReposition(); });
+    btnSettings.addEventListener('click', (e)=>{ if(coach.isActive() && !coach.allow('settings')) return; e.stopPropagation(); pop.classList.toggle('open'); if(pop.classList.contains('open')) rebuildSettings(); sfx.clickSoft(); coach.queueReposition(); });
     document.addEventListener('click', (e)=>{ if(!popWrap.contains(e.target)) pop.classList.remove('open'); });
 
-    const handleResize = ()=> { sizeStage(); queueCoachReposition(); };
+    const handleResize = ()=> { sizeStage(); coach?.handleResize?.(); };
     window.addEventListener('resize', handleResize);
     document.addEventListener('fullscreenchange', handleResize);
-    document.fonts?.addEventListener?.('loadingdone', ()=> queueCoachReposition());
+    document.fonts?.addEventListener?.('loadingdone', ()=> coach?.queueReposition?.());
+
 
     // visibility → resume audio if user enabled music
     document.addEventListener('visibilitychange', async ()=>{
@@ -1362,37 +1260,73 @@ export default {
       const elapsed=(pauseStart?pauseStart:now)-started+pausedAcc;
       hud.setTime(elapsed);
     }
+    function persistFinishTime(ms){
+      try{
+        const raw = safeGetItem(timesKey);
+        const all = raw? JSON.parse(raw) : [];
+        all.push({ variant: currentVariant.key, difficulty, ms, at: Date.now() });
+        // keep only last 200 to avoid bloat
+        while(all.length>200) all.shift();
+        safeSetItem(timesKey, JSON.stringify(all));
+      }catch{}
+    }
+    function getBestTimes(variant, diff){
+      try{
+        const raw = safeGetItem(timesKey);
+        const all = raw? JSON.parse(raw) : [];
+        return all.filter(t=> t.variant===variant && t.difficulty===diff)
+                  .sort((a,b)=> a.ms-b.ms);
+      }catch{ return []; }
+    }
+    function fmtTime(ms){
+      const s = Math.floor(ms/1000);
+      const m = Math.floor(s/60), ss = s%60;
+      return `${m}:${String(ss).padStart(2,'0')}`;
+    }
 
     // Boot
     sizeStage();
     if(!tryLoad(saveKey())) resetGame({ daily:false });
     setTimeout(()=>board.focus(),0);
 
+    // -------------------------- Coach Integration --------------------------------
+    coach = makeSudokuCoach({
+      wrap, board, controls, topbar, statusEl: status, progressEl: pbar,
+      getState: ()=> ({
+        N, BR, BC, prefs,
+        isSolved: isSolved(),
+        hasSelection: !!sel,
+        selection: sel,
+        hotelDigit: hotelDigit
+      }),
+      api: {
+        draw, select:(rc)=>{ sel=rc; draw(); }, setHotelDigit:(n)=>{ hotelDigit=n; draw(); },
+        place:(r,c,n)=> attemptPlace(r,c,n,false), canPlace:(r,c,n)=> (!given[r][c] && grid[r][c]===0 && validAt(r,c,n)),
+        focusBoard: ()=> board.focus(),
+        ping: (k)=> pingSfx(k),
+        checkWrong: ()=> checkWrongCellsFlash(),
+        eraseWrong: ()=> eraseWrongCells(),
+        toggleMusic: ()=> btnMusic.click(),
+        toggleSfx: ()=> btnSfx.click(),
+        newGameDaily: ()=> btnDaily.click(),
+        newGameRng:   ()=> btnNew.click(),
+        undo: ()=> doUndo(),
+        redo: ()=> doRedo(),
+        startOver: ()=> btnStartOver.click(),
+        showHelpPopover: ()=> { if(!pop.classList.contains('open')) btnSettings.click(); }
+      },
+      text: { setStatus },
+      timing: { NEXT_APPEAR_MS, AUTO_ADV_IDLE_MS, IDLE_AFTER_INTERACT_MS }
+    });
+
     // First-time tutorial (durable across versions)
-    try{
-      const seen = safeGetItem(tutSeenKey);
-      if(!seen){ startCoach(false); }
-    }catch{}
+    try{ const seen = safeGetItem(tutSeenKey); if(!seen){ coach.start(false); safeSetItem(tutSeenKey,'1'); } }catch{}
 
-    return {
-      dispose(){
-        document.removeEventListener('visibilitychange', ()=>{});
-        document.removeEventListener('keydown', onKeyDown);
-        document.removeEventListener('keyup', onKeyUp);
-        window.removeEventListener('resize', handleResize);
-        ro.disconnect();
-        music.setEnabled(false);
-      }
-    };
-
-    // -------------------------------- Utilities ---------------------------------
-    function labelForDiff(d){
-      const map={ supereasy:'Super Easy', easy:'Easy', medium:'Medium', hard:'Hard', expert:'Expert' };
-      return map[d]||'Medium';
-    }
-    function mkBtn(emoji,label,title){ const b=document.createElement('button'); b.className='sd-btn'; b.type='button'; b.title=title||label; const i=document.createElement('span'); i.textContent=emoji; const l=document.createElement('span'); l.textContent=label; b.append(i,l); return b; }
+    // ------------------------------- Utilities ---------------------------------
+    function labelForDiff(d){ const map={ supereasy:'Super Easy', easy:'Easy', medium:'Medium', hard:'Hard', expert:'Expert' }; return map[d]||'Medium'; }
+    function mkBtn(emoji,label,title){ const b=document.createElement('button'); b.className='sd-btn'; b.type='button'; if(title) b.title=title; const i=document.createElement('span'); i.textContent=emoji; const l=document.createElement('span'); l.textContent=label; b.append(i,l); return b; }
     function mkSelect(options,currentValue,title){
-      const s=document.createElement('select'); s.className='sd-select'; s.title=title||'';
+      const s=document.createElement('select'); s.className='sd-select'; if(title) s.title=title;
       options.forEach(opt=>{
         const o=document.createElement('option');
         if (typeof opt==='string'){ o.value=opt; o.textContent=opt; }
@@ -1458,7 +1392,6 @@ export default {
       function ok(){ return prefs.audio.sfx; }
       function now(){ return Tone.now(); }
 
-      // We do NOT call Tone.start() here proactively; sfx just tries to play.
       function t(f, dur=0.14, osc='triangle'){
         if(!ok()) return;
         const s = osc==='triangle'?synth : osc==='sine'?sine : square;
@@ -1499,49 +1432,34 @@ export default {
       return { clickSoft, select, move, place, clear, hint, error, unit, solve, toggle, drag, hover };
     }
 
-    // Music engine: lazy player created only after unlock. Multi-URL resolve + graceful fallback.
     function makeLofiMusicToneOrMP3_Lazy(prefs, saveFn, isUnlocked, unlock, notify){
-      let enabled=false;
-      let player=null;
-      let playerReady=false;
-      let initPromise=null;
-      let fallbackProc=null;
-      let fading=false;
-
+      let enabled=false; let player=null; let playerReady=false; let initPromise=null; let fallbackProc=null; let fading=false;
       const musicGain = new Tone.Gain(0.0).toDestination();
       const lp = new Tone.Filter(1300, "lowpass").connect(musicGain);
 
       function candidateUrls(){
         const list = [];
         try{ list.push(new URL('../../assets/audio/music/lofi.mp3', import.meta.url).href); }catch{}
-        list.push('/assets/audio/music/lofi.mp3');   // app root
-        list.push('./assets/audio/music/lofi.mp3');  // relative
-        list.push('assets/audio/music/lofi.mp3');    // bare
+        list.push('/assets/audio/music/lofi.mp3'); list.push('./assets/audio/music/lofi.mp3'); list.push('assets/audio/music/lofi.mp3');
         return list;
       }
 
       async function initPlayerOnce(){
         if (initPromise) return initPromise;
         initPromise = (async ()=>{
-          // ensure unlocked
           await unlock();
           const urls = candidateUrls();
           for (const url of urls){
             try{
               player = new Tone.Player({ url, autostart:false, loop:true });
               player.connect(lp);
-              // await load
               await new Promise((res, rej)=>{
                 player.onload = ()=> res(true);
                 player.onerror = (e)=> rej(e || new Error('load failed'));
               });
-              playerReady = true;
-              return true;
-            }catch(e){
-              player = null; playerReady=false;
-            }
+              playerReady = true; return true;
+            }catch(e){ player = null; playerReady=false; }
           }
-          // Fallback procedural
           fallbackProc = makeProcedural();
           notify?.('Couldn’t load music file — using synth lo-fi.');
           return false;
@@ -1595,27 +1513,13 @@ export default {
           await unlock();
           await initPlayerOnce();
           try{ musicGain.gain.cancelAndHoldAtTime(Tone.now()); }catch{}
-          if(playerReady && player){
-            try{ player.start(); }catch{}
-          }else{
-            if(Tone.Transport.state!=='started') Tone.Transport.start();
-            await fallbackProc.start();
-          }
-          // Debounced ramp
-          if(!fading){
-            fading=true;
-            musicGain.gain.linearRampToValueAtTime(0.32, Tone.now()+0.25);
-            setTimeout(()=> fading=false, 300);
-          }
+          if(playerReady && player){ try{ player.start(); }catch{} }
+          else{ if(Tone.Transport.state!=='started') Tone.Transport.start(); await fallbackProc.start(); }
+          if(!fading){ fading=true; musicGain.gain.linearRampToValueAtTime(0.32, Tone.now()+0.25); setTimeout(()=> fading=false, 300); }
         }else{
           try{ musicGain.gain.cancelAndHoldAtTime(Tone.now()); }catch{}
-          if(!fading){
-            fading=true;
-            musicGain.gain.linearRampToValueAtTime(0.0, Tone.now()+0.20);
-            setTimeout(()=> fading=false, 220);
-          }
-          try{ player?.stop(); }catch{}
-          try{ fallbackProc?.stop(); }catch{}
+          if(!fading){ fading=true; musicGain.gain.linearRampToValueAtTime(0.0, Tone.now()+0.20); setTimeout(()=> fading=false, 220); }
+          try{ player?.stop(); }catch{} try{ fallbackProc?.stop(); }catch{}
         }
       }
 
@@ -1640,659 +1544,16 @@ export default {
       }
     }
 
-    // ------------------------------- Coach / Tutorial 6.0 -----------------------
-    function startCoach(fromButton){
-      // Show only once per user (durable)
-      if(!fromButton){
-        try{ safeSetItem(tutSeenKey, '1'); }catch{}
+    // -------------------------------- Disposal -----------------------------------
+    return {
+      dispose(){
+        document.removeEventListener('visibilitychange', ()=>{});
+        document.removeEventListener('keydown', onKeyDown);
+        document.removeEventListener('keyup', onKeyUp);
+        window.removeEventListener('resize', handleResize);
+        ro.disconnect();
+        music.setEnabled(false);
       }
-
-      coachActive=true;
-      coachStepIdx=0;
-      coachDeepDive=false;
-      coachGoalAt=null;
-      coachNextVisible=false;
-      clearCoachTimers();
-      coach.classList.remove('hidden');
-      reaction.reset();
-
-      // Steps define anchors by selectors and which elements become "hot" (holes)
-      const steps = buildCoachSteps();
-
-      // Scene & state preservation across steps
-      let savedState = captureState();
-
-      renderStep();
-
-      function renderStep(){
-        clearCoachTimers();
-        const step = steps[coachStepIdx];
-        if(!step){ endCoach(); return; }
-
-        // Apply scene if provided
-        if (coachSceneRestore){ coachSceneRestore(); coachSceneRestore=null; }
-        if(step.scene){
-          coachSceneRestore = applyScene(step.scene);
-        }
-
-        // Optional state continuity
-        let continuity = null;
-        if(step.preserve && (savedState.sel || savedState.hotelDigit!=null)){
-          continuity = { sel:savedState.sel, hotelDigit:savedState.hotelDigit };
-        }
-
-        // Card content + typewriter
-        const title = step.title();
-        const body  = typeof step.body==='function' ? step.body() : step.body;
-        writeCard(title, body, step);
-
-        // Build mask holes from spots
-        updateMask(step.spots||[]);
-
-        // Allowlist: only block if outside “hot” areas when step says so
-        coachAllow = (k,p)=> {
-          if(!step.allow) return true;
-          try{ return step.allow(k,p)!==false; }catch{ return true; }
-        };
-
-        // Preserve selection/armed digit into this step if still valid
-        if(continuity){
-          restoreContinuity(continuity);
-        }
-
-        // Engagement listeners
-        if(step.onEnter) step.onEnter();
-
-        // Next appear timer
-        coachNextVisible=false;
-        coachTimers.push(setTimeout(()=> { coachNextVisible=true; refreshActions(step); }, NEXT_APPEAR_MS));
-
-        // Auto-advance when goal reached + idle
-        coachGoalAt=null;
-
-        // Monitor nodes that may change layout to re-anchor
-        observeForReposition(step);
-        queueCoachReposition();
-      }
-
-      function applyScene(scene){
-        const saved = captureState(true); // deep
-        if(scene && scene.grid && scene.solution && scene.given){
-          grid = clone(scene.grid);
-          solution = clone(scene.solution);
-          given = clone(scene.given);
-          puzzleInitial = clone(scene.grid);
-          undoStack.length=0; redoStack.length=0; sel=null; hotelDigit=null;
-        }
-        if(scene && scene.flags){
-          if(scene.flags.hasOwnProperty('mistakeFeedback')) prefs.help.mistakeFeedback = scene.flags.mistakeFeedback;
-          if(scene.flags.hasOwnProperty('hints')) prefs.help.hints = scene.flags.hints;
-          if(scene.flags.hasOwnProperty('showValidOnHotel')) prefs.help.showValidOnHotel = scene.flags.showValidOnHotel;
-        }
-        draw();
-
-        return ()=>{ // restore
-          restoreState(saved);
-          draw();
-        };
-      }
-
-      function captureState(deep=false){
-        return {
-          grid: deep?clone(grid):grid,
-          given: deep?clone(given):given,
-          solution: deep?clone(solution):solution,
-          puzzleInitial: deep?clone(puzzleInitial):puzzleInitial,
-          prefs: JSON.parse(JSON.stringify(prefs)),
-          sel: sel?{...sel}:null,
-          hotelDigit,
-          difficulty,
-          variant: currentVariant.key
-        };
-      }
-      function restoreState(s){
-        grid=s.grid; given=s.given; solution=s.solution; puzzleInitial=s.puzzleInitial;
-        prefs = Object.assign(prefs, s.prefs||{});
-        difficulty = s.difficulty || difficulty;
-        const next = VARIANTS.find(v=>v.key===s.variant) || currentVariant;
-        currentVariant = next; N=next.N; BR=next.BR; BC=next.BC; SYMBOLS=next.symbols;
-        sel = s.sel; hotelDigit=s.hotelDigit;
-        selDiff.value = difficulty; selVariant.value=next.key;
-        layoutBoardForVariant(); buildHotel(); draw();
-      }
-      function restoreContinuity(k){
-        // selection
-        if(k.sel){
-          const {r,c}=k.sel;
-          if(r>=0&&r<N&&c>=0&&c<N){ sel={r,c}; }
-        }
-        // hotel digit
-        if(k.hotelDigit!=null){
-          if(k.hotelDigit===0 || (k.hotelDigit>=1 && k.hotelDigit<=N)) hotelDigit=k.hotelDigit;
-        }
-        draw();
-      }
-
-      function writeCard(title, body, step){
-        // Actions row
-        const actions = document.createElement('div'); actions.className='actions';
-        const btnSkip = mkBtn('✕','Skip','Skip tutorial');
-        const btnBack = mkBtn('←','Back','Previous');
-        const btnDeep = mkBtn('🧭','Deep Dive','Explore everything');
-        const btnNext = mkBtn('→','Next','Next');
-
-        btnBack.disabled = (coachStepIdx===0);
-
-        btnSkip.addEventListener('click', ()=> endCoach());
-        btnBack.addEventListener('click', ()=>{ savedState = captureState(); coachStepIdx=Math.max(0, coachStepIdx-1); renderStep(); });
-        btnNext.addEventListener('click', ()=>{
-          savedState = captureState();
-          advanceOrEnd(step);
-        });
-        btnDeep.addEventListener('click', ()=>{
-          coachDeepDive = !coachDeepDive;
-          savedState = captureState();
-          // Rebuild steps with deep dive toggled
-          coachStepIdx = 0;
-          renderStep();
-        });
-
-        actions.append(btnSkip, btnBack, btnDeep, btnNext);
-
-        // Typewriter respects reduced motion
-        const prefersReduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-        coachCard.innerHTML = `<h4>${title}</h4><p class="${prefersReduced?'':'tw-caret'}" id="coach-body"></p>`;
-        coachCard.appendChild(actions);
-
-        const bodyEl = coachCard.querySelector('#coach-body');
-        if(prefersReduced){
-          bodyEl.classList.remove('tw-caret');
-          bodyEl.textContent = body;
-          queueCoachReposition(true);
-        }else{
-          typewriter(bodyEl, body, { speed:26, punctPause:200 }, ()=> queueCoachReposition(true));
-        }
-
-        // Actions disable until NEXT_APPEAR_MS
-        function refresh(){
-          const enable = coachNextVisible;
-          btnNext.disabled = !enable;
-          btnDeep.disabled = false;
-          // back is enabled unless 0
-          btnBack.disabled = coachStepIdx===0;
-        }
-        function refreshOnResize(){ refresh(); }
-        refresh();
-        step._refreshActions = refresh;
-      }
-
-      function refreshActions(step){
-        if(step && step._refreshActions) step._refreshActions();
-      }
-
-      function advanceOrEnd(step){
-        if (coachStepIdx >= (buildCoachSteps().length-1)){ endCoach(); return; }
-        coachStepIdx++;
-        renderStep();
-      }
-
-      function endCoach(){
-        coachActive=false;
-        coach.classList.add('hidden');
-        coachAllow = null;
-        clearCoachTimers();
-        if (coachSceneRestore){ coachSceneRestore(); coachSceneRestore=null; }
-        savedState = null;
-        queueCoachReposition();
-      }
-
-      function clearCoachTimers(){
-        coachTimers.forEach(t=> clearTimeout(t));
-        coachTimers.length=0;
-        if(coachIdleTimer){ clearTimeout(coachIdleTimer); coachIdleTimer=null; }
-      }
-
-      function updateMask(spots){
-        // Remove previous hot classes
-        document.querySelectorAll('.coach-hot').forEach(el=> el.classList.remove('coach-hot'));
-        // Build mask holes
-        const svg = coach.querySelector('svg');
-        const mask = svg.querySelector('#sd-mask');
-        // Clear old holes
-        for(let i=mask.children.length-1;i>=0;i--){
-          const n = mask.children[i];
-          if(n.tagName.toLowerCase()!=='rect') mask.removeChild(n);
-        }
-        // baseline white rect exists (index 0)
-        // Add black holes
-        const addHoleRect = (r)=> {
-          const hole = document.createElementNS('http://www.w3.org/2000/svg','rect');
-          hole.setAttribute('fill','black');
-          hole.setAttribute('x', String(r.left));
-          hole.setAttribute('y', String(r.top));
-          hole.setAttribute('width', String(r.width));
-          hole.setAttribute('height', String(r.height));
-          mask.appendChild(hole);
-        };
-        const rectFor = (el, pad=6)=>{
-          const r = el.getBoundingClientRect();
-          return {
-            left: Math.max(0, r.left - pad),
-            top: Math.max(0, r.top - pad),
-            width: r.width + pad*2,
-            height: r.height + pad*2
-          };
-        };
-
-        let any=false;
-        (spots||[]).forEach(s=>{
-          const els = Array.from(document.querySelectorAll(s.selector));
-          els.forEach(el=>{
-            if(!el) return;
-            el.classList.add('coach-hot');
-            addHoleRect(rectFor(el, s.padding??6));
-            any = true;
-          });
-        });
-        if(!any){
-          // Fallback hole: the entire controls bar
-          [controls, board].forEach(el=>{
-            el.classList.add('coach-hot');
-            addHoleRect(el.getBoundingClientRect());
-          });
-        }
-      }
-
-      function observeForReposition(step){
-        // Clean previous
-        coachObservedNodes.forEach(n=> roCoach.unobserve(n));
-        coachObservedNodes.clear();
-
-        const nodes = [];
-        (step.spots||[]).forEach(s=>{
-          const els = Array.from(document.querySelectorAll(s.selector));
-          els.forEach(el=> nodes.push(el));
-        });
-        nodes.push(coachCard);
-        nodes.push(wrap);
-        nodes.forEach(n=> { try{ roCoach.observe(n); coachObservedNodes.add(n);}catch{} });
-      }
-      const roCoach = new ResizeObserver(()=> queueCoachReposition());
-
-      function queueCoachReposition(force){
-        if(!coachActive) return;
-        if(coachRepositionRAF) cancelAnimationFrame(coachRepositionRAF);
-        coachRepositionRAF = requestAnimationFrame(()=> positionCoachCard(force));
-      }
-
-      function positionCoachCard(force){
-        if(!coachActive) return;
-        const step = buildCoachSteps()[coachStepIdx];
-        const anchorEls = (step.spots?.[0] ? Array.from(document.querySelectorAll(step.spots[0].selector)) : [board]).filter(Boolean);
-        const anchor = anchorEls[0] || board;
-        const ar = anchor.getBoundingClientRect();
-        const wr = wrap.getBoundingClientRect();
-
-        const candidates = [
-          {side:'right',  x: ar.right + 12, y: ar.top},
-          {side:'left',   x: ar.left - (coachCard.offsetWidth||320) - 12, y: ar.top},
-          {side:'bottom', x: ar.left, y: ar.bottom + 12},
-          {side:'top',    x: ar.left, y: ar.top - (coachCard.offsetHeight||160) - 12}
-        ];
-
-        const hotRects = Array.from(document.querySelectorAll('.coach-hot')).map(el=> el.getBoundingClientRect());
-
-        function score(pos){
-          const cw = coachCard.offsetWidth || 320;
-          const ch = coachCard.offsetHeight || 160;
-          const r = { left: pos.x, top: pos.y, right: pos.x+cw, bottom: pos.y+ch, width:cw, height:ch };
-          let overlap = 0;
-          hotRects.forEach(hr=>{ overlap += intersectArea(r, hr); });
-          const offX = Math.max(0, -r.left) + Math.max(0, r.right - (window.innerWidth-8));
-          const offY = Math.max(0, -r.top)  + Math.max(0, r.bottom - (window.innerHeight-8));
-          const off = offX*2 + offY*2;
-          return -(overlap*10 + off);
-        }
-
-        const dock = (wr.width < 480);
-        coach.classList.toggle('dock', dock);
-        let best = candidates[0], bestScore = -Infinity;
-        if(!dock){
-          for(const c of candidates){
-            const s = score(c);
-            if(s > bestScore){ best=c; bestScore=s; }
-          }
-          let x = Math.max(8, Math.min(best.x, window.innerWidth - (coachCard.offsetWidth||320) - 8));
-          let y = Math.max(8, Math.min(best.y, window.innerHeight - (coachCard.offsetHeight||160) - 8));
-          coachCard.style.left = x + 'px';
-          coachCard.style.top  = y + 'px';
-          coachCard.style.right = 'auto';
-          coachCard.style.bottom= 'auto';
-        }else{
-          coachCard.style.left = (wr.left + 8) + 'px';
-          coachCard.style.right = (window.innerWidth - wr.right + 8) + 'px';
-          coachCard.style.bottom = (window.innerHeight - wr.bottom + 8) + 'px';
-          coachCard.style.top = 'auto';
-        }
-        coachCard.style.opacity='1';
-      }
-
-      function intersectArea(a,b){
-        const l = Math.max(a.left, b.left), r = Math.min(a.right, b.right);
-        const t = Math.max(a.top, b.top), btm = Math.min(a.bottom, b.bottom);
-        const w = Math.max(0, r-l), h = Math.max(0, btm-t);
-        return w*h;
-      }
-
-      function typewriter(el, text, opts, onDone){
-        const speed = opts?.speed ?? 28;
-        const punctPause = opts?.punctPause ?? 220;
-        let i=0, cancelled=false;
-        function next(){
-          if(cancelled) return;
-          if(i>=text.length){ el.classList.remove('tw-caret'); onDone?.(); return; }
-          el.textContent = text.slice(0, ++i);
-          const ch = text[i-1];
-          const pause = ('.!?'.includes(ch) ? punctPause : speed);
-          coachTimers.push(setTimeout(next, pause));
-        }
-        el.addEventListener('click', ()=>{ cancelled=true; el.textContent=text; el.classList.remove('tw-caret'); onDone?.(); }, { once:true });
-        next();
-      }
-
-      // --- Reactions from gameplay to update copy lightly ---
-      coachReact = function(kind){
-        if(!coachActive) return;
-        reaction.bump(kind);
-
-        // Compute once and reuse
-        const currentStep = buildCoachSteps()[coachStepIdx];
-
-        // If the current step exposes a reactive body, rebuild its text
-        if(currentStep && typeof currentStep.body === 'function'){
-          const body = currentStep.body(reaction.peek(kind));
-          const bodyEl = coachCard.querySelector('#coach-body');
-          const prefersReduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-          if(prefersReduced){
-            bodyEl.textContent = body;
-          }else{
-            bodyEl.textContent = '';
-            typewriter(bodyEl, body, { speed:24, punctPause:180 }, ()=> queueCoachReposition(true));
-          }
-        }
-
-        // Goal/auto-advance logic
-        if(currentStep && currentStep.goal && currentStep.goal(kind)){
-          if(!coachGoalAt) coachGoalAt = performance.now();
-
-          const planAdvance = ()=>{
-            if(!coachActive) return;
-
-            // if interacting, wait for idle then re-arm timer
-            if(reaction.recentActivityWithin(IDLE_AFTER_INTERACT_MS)){
-              if(coachIdleTimer) clearTimeout(coachIdleTimer);
-              coachIdleTimer = setTimeout(planAdvance, IDLE_AFTER_INTERACT_MS);
-              return;
-            }
-
-            // advance if at least AUTO_ADV_IDLE_MS has elapsed since goal
-            if(performance.now() - coachGoalAt >= AUTO_ADV_IDLE_MS){
-              savedState = captureState();
-              advanceOrEnd(currentStep);
-            }else{
-              coachTimers.push(setTimeout(planAdvance, AUTO_ADV_IDLE_MS));
-            }
-          };
-
-          planAdvance();
-        }
-      }
-
-
-      // Expose to outer scope
-      window.__sdCoachReact = coachReact;
-
-      // Build steps (Quick Tour + optional Deep Dive)
-      function buildCoachSteps(){
-        const steps = [];
-
-        // Utilities to make scenes
-        function sceneBlank(){
-          const g = empty(); const sol = genSolved(makeRng(1234));
-          const giv = g.map(row=>row.map(()=>false));
-          return { grid:g, solution:sol, given:giv, flags:{ mistakeFeedback:true, hints:false, showValidOnHotel:true } };
-        }
-        function sceneSingleMissingRow(){
-          const rnd = makeRng(4321);
-          const sol = genSolved(rnd);
-          const g = clone(sol);
-          const r = 0; g[r][N-1]=0;
-          const giv = g.map((row,ri)=>row.map((v,ci)=> !(ri===r && ci===N-1) ));
-          return { grid:g, solution:sol, given:giv, flags:{ mistakeFeedback:true, hints:false, showValidOnHotel:false } };
-        }
-        function sceneWrongEntries(){
-          const rnd = makeRng(2222); const sol = genSolved(rnd); const g=clone(sol);
-          const wrongs = [[0,0, (sol[0][0]%N)+1], [1,1,(sol[1][1]%N)+1], [2,2,(sol[2][2]%N)+1]];
-          wrongs.forEach(([r,c,v])=> g[r][c]=v);
-          const giv = g.map((row,ri)=>row.map((v,ci)=> (ri+ci)%3===0 ));
-          wrongs.forEach(([r,c])=> giv[r][c]=false);
-          return { grid:g, solution:sol, given:giv, flags:{ mistakeFeedback:false, hints:false, showValidOnHotel:false } };
-        }
-
-        // --- Quick Tour ---
-        steps.push({
-          title: ()=> 'Welcome to Sudoku',
-          body: ()=> 'We’ll take a quick, playful tour. You can explore freely — Next appears in a few seconds.',
-          spots: [{ selector: '.sd-stage' }],
-        });
-
-        steps.push({
-          scene: sceneBlank(),
-          title: ()=> 'Select a Cell',
-          body: (react)=> reaction.pick('select', [
-            'Click any cell to select it.',
-            'Tap a square — any square.',
-            'Choose a tile; it’ll glow a little ✨'
-          ]),
-          spots: [{ selector: '.sd-board' }],
-          allow: (k)=> ['cellClick','mousedown','keydown','hotelClick','context','tip','dragstart','drop','dragover','dragenter','dragleave'].includes(k),
-          goal: (k)=> k==='cellClick',
-          preserve:{ selection:true, hotel:true }
-        });
-
-        steps.push({
-          title: ()=> 'Place from the Number Bar',
-          body: ()=> 'With a cell selected, click a number below to place it instantly. No “arming” needed.',
-          spots: [{ selector: '.sd-hbtn' }, { selector: '.sd-board' }],
-          allow: (k)=> ['hotelClick','cellClick','keydown'].includes(k),
-          goal: (k)=> k==='place',
-          preserve:{ selection:true, hotel:true }
-        });
-
-        steps.push({
-          title: ()=> 'Arm a Digit (smart highlights)',
-          body: ()=> 'No selection? Click a number to “arm” it — valid spots glow. Tap again to unarm.',
-          spots: [{ selector: '.sd-hbtn' }, { selector: '.sd-board' }],
-          allow: (k)=> ['hotelClick','cellClick','keydown'].includes(k),
-          goal: (k)=> k==='hotel' || k==='place',
-          preserve:{ selection:true, hotel:true }
-        });
-
-        steps.push({
-          title: ()=> 'Right-click for Candidates',
-          body: ()=> 'Right-click an empty cell to see valid candidates, then click one to place.',
-          spots: [{ selector: '.sd-board' }],
-          allow: (k)=> ['context','tip','cellClick','keydown'].includes(k),
-          goal: (k)=> k==='tipPlace',
-          preserve:{ selection:true, hotel:true }
-        });
-
-        steps.push({
-          title: ()=> 'Keyboard Movement',
-          body: ()=> reaction.pick('move', [
-            'Use arrow keys (Home/End/PgUp/PgDn) to move quickly.',
-            'Arrow around — smooth 🧊.',
-            'Zoom zoom! Try a few moves.'
-          ]),
-          spots: [{ selector: '.sd-board' }],
-          allow: (k)=> k==='keydown' || k==='cellClick',
-          goal: (k)=> k==='move',
-          preserve:{ selection:true, hotel:true }
-        });
-
-        steps.push({
-          title: ()=> 'Undo & Redo',
-          body: (react)=> {
-            if(reaction.count('undo')===0) return 'Try ↩️ Undo — we’ll rewind your last move. Then bring it back with ↪️ Redo.';
-            if(reaction.count('redo')===0) return 'Nice undo! Now hit ↪️ Redo to bring it back.';
-            return reaction.pick('redo', [
-              'Perfect. Undo/Redo are your time machine.',
-              'Back and forth like a pro 👏'
-            ]);
-          },
-          spots: [{ selector: '.sd-btn[title^="Undo"], .sd-btn[title^="Redo"]' }, { selector: '.sd-btn' }, { selector: '.sd-board' }],
-          allow: (k)=> ['undo','redo','keydown','cellClick'].includes(k),
-          goal: (k)=> reaction.count('undo')>0 && reaction.count('redo')>0,
-          preserve:{ selection:true, hotel:true }
-        });
-
-        steps.push({
-          title: ()=> 'Peek the Solution',
-          body: ()=> 'Hold F to reveal the solution; release to return. Handy for checking patterns.',
-          spots: [{ selector: '.sd-board' }],
-          allow: (k)=> k==='keydown' || k==='cellClick',
-          goal: (k)=> k==='peekBack',
-          preserve:{ selection:true, hotel:true }
-        });
-
-        steps.push({
-          scene: sceneWrongEntries(),
-          title: ()=> 'Plain Mode Tools',
-          body: ()=> 'With “mistake feedback” off, use 🧪 Check to highlight wrongs and 🧹 Erase to clear them.',
-          spots: [{ selector: '.sd-btn[title^="Highlight wrong entries"], .sd-btn[title^="Erase all wrong"]' }],
-          allow: (k)=> ['check','erase','cellClick'].includes(k),
-          goal: (k)=> k==='check' || k==='erase',
-          preserve:{ selection:true, hotel:true }
-        });
-
-        steps.push({
-          scene: sceneSingleMissingRow(),
-          title: ()=> 'Finish a Row',
-          body: ()=> 'Complete this highlighted row to see the celebration ✨',
-          spots: [{ selector: '.sd-board' }],
-          allow: (k)=> ['cellClick','hotelClick','keydown'].includes(k),
-          goal: (k)=> k==='place',
-          preserve:{ selection:true, hotel:true }
-        });
-
-        steps.push({
-          title: ()=> 'Daily, Variants, Difficulty',
-          body: ()=> '📅 gives you a seeded daily. You can switch variants or difficulty anytime — puzzles regenerate cleanly.',
-          spots: [{ selector: '.sd-controls' }],
-          allow: ()=> true,
-        });
-
-        steps.push({
-          title: ()=> 'Chill Audio',
-          body: ()=> 'Toggle 🎵 for lo-fi music (your lofi.mp3). On first tap we’ll enable audio — smooth fade in.',
-          spots: [{ selector: '.sd-btn[title^="Toggle music"]' }],
-          allow: (k)=> k==='music' || k==='sfx' || k==='keydown',
-          goal: (k)=> k==='music',
-        });
-
-        steps.push({
-          title: ()=> 'You’re set!',
-          body: ()=> 'You can reopen this tutorial anytime via 🎓 Tutorial. Ready to puzzle?',
-          spots: [{ selector: '.sd-stage' }],
-          allow: ()=> true
-        });
-
-        if(coachDeepDive){
-          // --- Deep Dive (optional) ---
-          steps.push({
-            title: ()=> 'Deep Dive: Drag & drop',
-            body: ()=> 'Drag a number from the bar into a cell. Drag × to clear.',
-            spots: [{ selector: '.sd-hbtn' }, { selector: '.sd-board' }],
-            allow: (k)=> ['dragstart','drop','dragover','dragenter','dragleave'].includes(k),
-            goal: (k)=> k==='dropPlace' || k==='dropClear',
-            preserve:{ selection:true, hotel:true }
-          });
-          steps.push({
-            title: ()=> 'Deep Dive: Number keys',
-            body: ()=> 'Type 1–9 (or A–G on 16×16) to place. 0/Space clears.',
-            spots: [{ selector: '.sd-board' }],
-            allow: (k)=> k==='keydown',
-            goal: (k)=> k==='place' || k==='clear',
-            preserve:{ selection:true, hotel:true }
-          });
-          steps.push({
-            title: ()=> 'Deep Dive: Settings',
-            body: ()=> 'Open ⚙️ Help to tweak mistake feedback, valid-spot glow, same-digit highlight, and row/col bars.',
-            spots: [{ selector: '.sd-pop-wrap' }],
-            allow: (k)=> k==='settings',
-          });
-          steps.push({
-            title: ()=> 'Deep Dive: Accessibility',
-            body: ()=> 'The grid is focusable; status updates live; keyboard controls cover everything. Have fun!',
-            spots: [{ selector: '.sd-board' }, { selector: '.sd-status' }],
-            allow: ()=> true,
-          });
-        }
-
-        return steps;
-      }
-    }
-
-    function queueCoachReposition(force){
-      // helper used by outer parts (draw/resize) to nudge coach
-      if(!document.contains(coach)) return;
-      if(coach.classList.contains('hidden')) return;
-      // Trigger the internal reposition logic by dispatching a resize event to the coach RO (handled inside startCoach)
-      // We rely on startCoach's own queue; nothing to do here beyond a layout read.
-      void coach.offsetWidth; // micro-task to ensure CSS is applied before next RO cycle
-    }
-
-    // Reaction pools (shuffle bag, escalation)
-    function makeReactionPools(){
-      const pools = {
-        move: ["Smooth 🧊","Nice glide!","Arrow pro!","Zoom zoom!","Cruising."],
-        select: ["Picked!","That one looks promising.","Locking in.","Let’s go."],
-        place: ["Clean drop!","Crisp!","That fits.","Nice.","Satisfying."],
-        undo: ["Rewinding ⏪","Back we go.","Undo magic.","Time hop."],
-        redo: ["Forward again ⏩","And it’s back.","Redo FTW.","Bounce!"],
-        tip: ["Secret menu!","Handy.","Candidates up.","Right-click wizardry."],
-        music: ["Vibes on 🎧","Lo-fi engaged.","Tune time.","Ambient mode."],
-        hotel: ["Armed.","Let’s paint the board.","Good pick.","Ready to place."],
-        clear: ["Fresh slate.","Wiped.","Gone.","Cleared."],
-      };
-      const bag = {};
-      Object.keys(pools).forEach(k=> bag[k]=shuffleBag(pools[k]));
-      const counts = {};
-      let lastInteract = 0;
-
-      function shuffleBag(arr){
-        const a = arr.slice();
-        let i=a.length;
-        return ()=>{
-          if(i<=0){ i=a.length; }
-          const j = Math.floor(Math.random()*i);
-          const v = a[j];
-          [a[j], a[i-1]] = [a[i-1], a[j]];
-          i--;
-          return v;
-        };
-      }
-
-      return {
-        pick(kind, defaults){ const fn = bag[kind]; return fn?fn(): (defaults && defaults[0]) || ''; },
-        bump(kind){ counts[kind]=(counts[kind]||0)+1; lastInteract=performance.now(); },
-        count(kind){ return counts[kind]||0; },
-        recentActivityWithin(ms){ return performance.now()-lastInteract < ms; },
-        peek(kind){ return { count: counts[kind]||0 }; },
-        reset(){ Object.keys(counts).forEach(k=> counts[k]=0); lastInteract=0; }
-      };
-    }
-
+    };
   } // end launch
 };
-
