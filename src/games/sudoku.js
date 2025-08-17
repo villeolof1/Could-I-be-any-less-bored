@@ -1,19 +1,24 @@
-﻿// sudoku.js — Sudoku (v32)
+﻿// sudoku.js — Sudoku (v33)
 // -----------------------------------------------------------
-// What’s new in v32 (highlights)
-// • Coach/tutorial extracted to ./sudoku-coach.js with:
-//    - glowing pointer, smarter card placement (no overlaps), fullscreen-aware
-//    - richer, non-repeating lines; smooth, gated steps; error demo
-//    - always visible in fullscreen (reparent on fullscreenchange)
-// • Audio unlock UX hardened (explicit resume path + overlay)
-// • Fullscreen toggle button (⛶) for consistency with coach’s first step
-// • Saved finish times (per variant+difficulty) with quick “Best times” in Help
+// What’s new in v33 (stability pass)
+// • Coach integration is future-proofed:
+//    - early no-op stub avoids TDZ (“Cannot access 'coach' before initialization”)
+//    - all calls are optional-chained; single adapter surface
+// • Audio unlock UX hardened (overlay pill + first-gesture unlock); Tone.js lazy init
+// • “Digit hotel” rule is strict:
+//    - if a cell is selected and you click a hotel digit → it places in that cell
+//    - green “valid spots” show only when NO cell is selected
+// • Confetti/fx canvas resizes with board; fullscreen aware
+// • Unit-completion celebrations (row/column/box) with satisfying micro-anims
+// • Help popover closed by default; Best-times per variant+difficulty
+// • Minor fixes: hint box loop off-by-var, cleaner status handling
 //
 // Depends on: makeHUD(api,{time:true}) and makeConfetti(canvas,opts) from ../kit/gamekit.js
 // Install: npm i tone
 import { makeHUD, makeConfetti, mkAudio as makeTinyAudio } from '../kit/gamekit.js';
 import * as Tone from 'tone';
-import { makeSudokuCoach } from './sudoku/sudoku-coach.js';
+
+
 
 export default {
   id: 'sudoku',
@@ -30,6 +35,12 @@ export default {
     const AUTO_ADV_IDLE_MS = 4000;
     const IDLE_AFTER_INTERACT_MS = 1500;
 
+    // Wave step between neighboring cells in a unit celebration
+    const WAVE_STEP_MS = 44;  // 36–60ms feels good; tweak to taste
+
+
+    
+
     // ------------------------------- Root & CSS ---------------------------------
     const root = document.createElement('div');
     root.style.display='flex';
@@ -42,12 +53,13 @@ export default {
     css.textContent = `
       @import url('https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap');
       :root{
+        --coachZ: 10100;
         --fg:#e9ecf4; --muted:#a3acc3; --bg:#0f141c;
         --panel:rgba(255,255,255,.03); --ring:#2c3850;
         --accentA:#86b4ff; --accentB:#a5e8ff;
         --peer:rgba(180,200,255,.12); --match:rgba(130,170,255,.18); --cand:rgba(130,220,190,.22);
         --err:#ff3c3c; --errFill:rgba(255,60,60,.36); --errScope:rgba(255,60,60,.18);
-        --celeScope:rgba(70,210,150,.18);
+        --celeScope:rgba(70,220,160,.22);
         --rowcol:rgba(180,200,255,.10); --done:#4ad782;
         --errFadeMs: ${ERR_FADE_MS}ms; --celeFadeMs: ${CELE_FADE_MS}ms;
         --stageSize: 680px; --gap: 10px; --blurMask: blur(2px); --yellow:#ffd447;
@@ -156,15 +168,8 @@ export default {
       .sd-tipbtn:disabled{ opacity:.28; cursor:default; }
       .sd-tipbtn:hover:not(:disabled){ background:rgba(255,255,255,.10); }
 
-      /* replace the old .sd-audio-gate with this */
-      .sd-audio-gate{
-        position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-        z-index:10000;
-        /* IMPORTANT: let clicks pass through the backdrop */
-        pointer-events:none;
-      }
-
-      /* new: the only clickable thing (small centered pill) */
+      /* audio gate overlay */
+      .sd-audio-gate{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:10000; pointer-events:none; }
       .sd-audio-gate .sd-audio-btn{
         pointer-events:auto;
         padding:10px 14px; border-radius:999px; font-size:13px;
@@ -172,8 +177,6 @@ export default {
         border:1px solid var(--ring); cursor:pointer;
         backdrop-filter: blur(3px);
       }
-
-      /* allow JS to hide it without layout thrash */
       .sd-audio-gate.hidden{ display:none; }
 
       .sd-fx{ position:absolute; inset:0; z-index:var(--fxZ); pointer-events:none; display:block; }
@@ -192,27 +195,7 @@ export default {
     audioGate.className = 'sd-audio-gate hidden';
     audioGate.innerHTML = `<button type="button" class="sd-audio-btn">Tap to enable sound</button>`;
     wrap.appendChild(audioGate);
-
     const audioBtn = audioGate.querySelector('.sd-audio-btn');
-
-    function updateAudioGate(){
-      try{
-        const suspended = !!Tone.context && Tone.context.state !== 'running';
-        const shouldShow = !audioReady || suspended;
-        audioGate.classList.toggle('hidden', !shouldShow);
-      }catch{
-        audioGate.classList.add('hidden');
-      }
-    }
-
-    // Clicking the pill tries to unlock, then gets out of the way either way.
-    // (We also keep the global first-gesture unlock you already set up.)
-    audioBtn.addEventListener('click', async (e)=>{
-      e.stopPropagation();
-      await ensureAudioReady(true);
-      updateAudioGate();  // hides if running, otherwise stays visible but non-blocking
-    });
-
 
     // FX Canvas (confetti)
     const fxCanvas = document.createElement('canvas'); fxCanvas.className='sd-fx';
@@ -224,7 +207,6 @@ export default {
       start(){}, stop(){}, isActive(){ return false; }, allow(){ return true; },
       react(){}, handleResize(){}, queueReposition(){}
     };
-
 
     // ------------------------------ Top bar & controls ---------------------------
     const topbar = document.createElement('div'); topbar.className='sd-topbar'; wrap.appendChild(topbar);
@@ -310,7 +292,7 @@ export default {
     confetti = makeConfetti(fxCanvas, { duration: 6 });
 
     // --------------------------- Variant & Difficulty State ----------------------
-    const STORAGE_NS='sudoku:minimal:v32';
+    const STORAGE_NS='sudoku:minimal:v33';
     const prefsKey = `${STORAGE_NS}:prefs`;
     const timesKey = `${STORAGE_NS}:times`;
     const tutSeenKey = 'sudoku:tutorial:seen'; // durable across versions
@@ -322,7 +304,6 @@ export default {
         return true;
       }catch(e){
         if (e && (e.name==='QuotaExceededError' || e.name==='NS_ERROR_DOM_QUOTA_REACHED')){
-          // opportunistic eviction of old saves of this namespace (keep prefs + most recent 5)
           try{
             const keys = [];
             for(let i=0;i<localStorage.length;i++){
@@ -338,7 +319,6 @@ export default {
             return true;
           }catch{ /* ignore */ }
         }
-        // Final fallback: no crash, but surface a gentle notice
         setStatus('Could not save (storage full). Progress might not persist.');
         return false;
       }
@@ -384,7 +364,6 @@ export default {
 
       audioInitPromise = (async ()=>{
         try{
-          // explicit unlock on demand
           await Tone.start();
           if (Tone.context && Tone.context.state !== 'running'){
             try{ await Tone.context.resume(); }catch{}
@@ -395,7 +374,6 @@ export default {
           audioReady = true;
           music.setEnabled(!!prefs.audio.music);
         }catch(e){
-          // keep quiet; overlay will remain visible until a real gesture starts it
           audioReady = false;
         }finally{
           audioInitPromise = null;
@@ -406,6 +384,23 @@ export default {
       })();
       return audioInitPromise;
     }
+
+    function updateAudioGate(){
+      try{
+        const suspended = !!Tone.context && Tone.context.state !== 'running';
+        const shouldShow = !audioReady || suspended;
+        audioGate.classList.toggle('hidden', !shouldShow);
+      }catch{
+        audioGate.classList.add('hidden');
+      }
+    }
+
+    // Clicking the pill tries to unlock
+    audioBtn.addEventListener('click', async (e)=>{
+      e.stopPropagation();
+      await ensureAudioReady(true);
+      updateAudioGate();
+    });
 
     // Unlock on first gesture AND on the audioGate click
     const tryUnlockOnce = ()=>{
@@ -533,7 +528,7 @@ export default {
       isDaily = daily;
       if(daily){
         const d=new Date(); const ds=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-        currentSeed = seedFromString(`daily:${ds}:${difficulty}:${currentVariant.key}:SudokuV32`);
+        currentSeed = seedFromString(`daily:${ds}:${difficulty}:${currentVariant.key}:SudokuV33`);
       }else{
         currentSeed = seed ?? (typeof crypto!=='undefined'&&crypto.getRandomValues
           ? crypto.getRandomValues(new Uint32Array(1))[0] : (Date.now()>>>0));
@@ -580,6 +575,7 @@ export default {
         b.addEventListener('click', async ()=>{
           if(coach.isActive() && !coach.allow('hotelClick', {n:idx})) return;
           hideTip();
+          // Strict rule: with a selection, clicking hotel digit places directly (if allowed)
           if (sel && !given[sel.r][sel.c] && grid[sel.r][sel.c]===0){
             attemptPlace(sel.r, sel.c, idx, true);
             draw();
@@ -760,7 +756,6 @@ export default {
         } else if(v){
           const d=document.createElement('div'); d.className='sd-num ' + (isGiven?'given':'user'); d.textContent=valToSym(v);
           cell.appendChild(d);
-          cell.classList.toggle('given', isGiven);
           cell.setAttribute('aria-label', `Row ${r+1} Column ${c+1}, ${isGiven?'given ':''}${valToSym(v)}`);
         } else {
           cell.setAttribute('aria-label', `Row ${r+1} Column ${c+1}, empty`);
@@ -783,14 +778,14 @@ export default {
           stickyCands.delete(key);
         }
 
-        // Green candidates ONLY when hotel is armed AND (no selection OR selection is given)
+        // Green candidates ONLY when hotel is armed AND NO cell is selected
         const shouldShowCand =
           !!hotelDigit &&
           hotelDigit !== 0 &&
           !showSolutionHold &&
           prefs.help.enabled &&
           prefs.help.showValidOnHotel &&
-          (!sel || given[sel.r][sel.c] === true);
+          !sel;  // strict: never show if there is a selection
 
         if(!showSolutionHold && !suppressHints && shouldShowCand && !v && validAt(r,c,hotelDigit)) cell.classList.add('cand');
 
@@ -807,7 +802,7 @@ export default {
             }
           }
           board.focus(); draw();
-          pingSfx('select'); coach.react(wasSel?'reselect':'select');
+          pingSfx('select'); coach.react('cellClick');
         });
 
         cell.addEventListener('contextmenu', (e)=>{
@@ -903,15 +898,17 @@ export default {
         }
       };
 
-      if(rowFull && unitCompleteCorrect('row', r)) { animateUnit('row', r); pingSfx('unit'); }
-      if(colFull && unitCompleteCorrect('col', c)) { animateUnit('col', c); pingSfx('unit'); }
+      if(rowFull && unitCompleteCorrect('row', r)) { animateUnit('row', r, { r, c }); pingSfx('unit'); }
+      if(colFull && unitCompleteCorrect('col', c)) { animateUnit('col', c, { r, c }); pingSfx('unit'); }
       if(boxFull && unitCompleteCorrect('box')){
-        animateUnit('box', (Math.floor(r/BR))*(N/BC) + Math.floor(c/BC));
+        animateUnit('box', (Math.floor(r/BR))*(N/BC) + Math.floor(c/BC), { r, c });
         pingSfx('unit');
       }
+
     }
 
-    function animateUnit(type, idx){
+    function animateUnit(type, idx, origin){
+      // Collect cells in the unit
       const cells = [];
       if(type==='row'){ for(let c=0;c<N;c++) cells.push([idx,c]); }
       if(type==='col'){ for(let r=0;r<N;r++) cells.push([r,idx]); }
@@ -919,26 +916,68 @@ export default {
         const br=(Math.floor(idx/(N/BC)))*BR, bc=(idx%(N/BC))*BC;
         for(let r=br;r<br+BR;r++) for(let c=bc;c<bc+BC;c++) cells.push([r,c]);
       }
-      for(const [r,c] of cells){
-        const o = ovlAt(r,c);
-        if(o){
-          o.classList.add('cele-scope','show'); setTimeout(()=> o.classList.remove('show'), CELE_FADE_MS);
-          setTimeout(()=> o.classList.remove('cele-scope'), CELE_FADE_MS+50);
-          o.classList.add('sweep','show'); setTimeout(()=> o.classList.remove('show'), 560);
-          setTimeout(()=> o.classList.remove('sweep'), 700);
-        }
-        const el = boardCell(r,c); if(!el) continue;
-        el.classList.add('sd-complete');
-        const numEl = el.querySelector('.sd-num'); if(numEl){
-          numEl.classList.add('cele','twirl');
-          setTimeout(()=> numEl && numEl.classList.remove('cele'), 600);
-          setTimeout(()=> numEl && numEl.classList.remove('twirl'), 560);
-        }
-        setTimeout(()=> el.classList.remove('sd-complete'), 560);
-        const burst = document.createElement('div'); burst.className = 'sd-burst'; el.appendChild(burst);
-        setTimeout(()=> { burst.remove(); }, 620);
-      }
+
+      // Order cells by distance from the origin for a ripple effect
+      // Fallback to center if no origin passed (shouldn’t happen in normal flow)
+      const o = origin || (()=>{
+        if(type==='row') return { r: idx, c: Math.floor(N/2) };
+        if(type==='col') return { r: Math.floor(N/2), c: idx };
+        // box center
+        const br=(Math.floor(idx/(N/BC)))*BR, bc=(idx%(N/BC))*BC;
+        return { r: br + Math.floor(BR/2), c: bc + Math.floor(BC/2) };
+      })();
+
+      const dist = (r,c)=> Math.abs(r - o.r) + Math.abs(c - o.c);
+      // Stable sort: row/col use natural progression, box uses manhattan wave
+      cells.sort((a,b)=>{
+        const da = dist(a[0], a[1]);
+        const db = dist(b[0], b[1]);
+        if (da !== db) return da - db;
+        // secondary ordering for nicer symmetry
+        if(type==='row') return a[1] - b[1];
+        if(type==='col') return a[0] - b[0];
+        return (a[0]-b[0]) || (a[1]-b[1]);
+      });
+
+      // Fire micro-anim per cell with a stagger for the wave
+      cells.forEach(([r,c], i)=>{
+        const delay = i * WAVE_STEP_MS;
+
+        setTimeout(()=>{
+          const ovl = ovlAt(r,c);
+          const el  = boardCell(r,c);
+          if(!el) return;
+
+          // Soft green scope + sheen sweep (uses your existing CSS)
+          if(ovl){
+            ovl.classList.add('cele-scope','show');
+            setTimeout(()=> ovl.classList.remove('show'), CELE_FADE_MS);
+            setTimeout(()=> ovl.classList.remove('cele-scope'), CELE_FADE_MS + 50);
+
+            ovl.classList.add('sweep','show');
+            setTimeout(()=> ovl.classList.remove('show'), 560);
+            setTimeout(()=> ovl.classList.remove('sweep'), 700);
+          }
+
+          // Pop the cell and twirl the digit briefly
+          el.classList.add('sd-complete');
+          const numEl = el.querySelector('.sd-num');
+          if(numEl){
+            numEl.classList.add('cele','twirl');
+            setTimeout(()=> numEl && numEl.classList.remove('cele'), 600);
+            setTimeout(()=> numEl && numEl.classList.remove('twirl'), 560);
+          }
+          setTimeout(()=> el.classList.remove('sd-complete'), 560);
+
+          // A faint ring burst for extra delight
+          const burst = document.createElement('div');
+          burst.className = 'sd-burst';
+          el.appendChild(burst);
+          setTimeout(()=> { burst.remove(); }, 620);
+        }, delay);
+      });
     }
+
 
     function attemptPlace(r,c,n, clearHotelOnSuccess){
       if (given[r][c] || showSolutionHold) return;
@@ -1026,7 +1065,6 @@ export default {
       confetti.burst({ from:{ x, y }, count: 260 });
     }
 
-
     // -------------------------- Right-click candidate tip ------------------------
     function hideTip(){ tip.classList.remove('open'); clearTimeout(tip._timer); }
 
@@ -1082,21 +1120,23 @@ export default {
     document.addEventListener('keyup', onKeyUp, { passive:true });
 
     // ------------------------ Global click (clear transient) ---------------------
-    document.addEventListener('mousedown', (e)=>{
+    const clearTransientOnMouseDown = (e)=>{
       if (e.button!==0) return;
       if(coach.isActive() && !coach.allow('mousedown', {e})) { e.preventDefault(); return; }
       activeErr = null;
       clearActiveErrorVisuals();
       hideTip();
-    }, true);
+    };
+    document.addEventListener('mousedown', clearTransientOnMouseDown, true);
 
     // De-select when clicking outside board/hotel (and preserve selection when using hotel)
-    document.addEventListener('mousedown', (e)=>{
+    const deselectOnOutsideMouseDown = (e)=>{
       if (!wrap.contains(e.target)) { sel=null; hideTip(); draw(); return; }
       const isCell   = !!e.target.closest('.sd-cell');
       const isHotelB = !!e.target.closest('.sd-hbtn');
       if (!isCell && !isHotelB) { sel=null; hideTip(); draw(); return; }
-    });
+    };
+    document.addEventListener('mousedown', deselectOnOutsideMouseDown);
 
     // ------------------------------- Controls -----------------------------------
     btnNew.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('new')) return; hideTip(); sel=null; hotelDigit=null; resetGame({ daily:false }); pingSfx('toggle'); coach.react('new'); });
@@ -1107,7 +1147,14 @@ export default {
     btnHint.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('hint')) return; if(prefs.help.enabled && prefs.help.hints && !showSolutionHold) { doHint(true); pingSfx('hint'); coach.react('hint'); } });
     btnCheck.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('check')) return; if(!prefs.help.mistakeFeedback) { checkWrongCellsFlash(); pingSfx('toggle'); coach.react('check'); } });
     btnEraseWrong.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('erase')) return; if(!prefs.help.mistakeFeedback) { eraseWrongCells(); pingSfx('clear'); coach.react('erase'); } });
-    btnTutorial.addEventListener('click', ()=> coach.start(true));
+    btnTutorial.addEventListener('click', ()=>{
+      if (window.CoachTutorial && typeof window.CoachTutorial.launch === 'function') {
+        window.CoachTutorial.launch();
+      } else {
+        console.warn('CoachTutorial not loaded');
+      }
+    });
+
     btnSfx.addEventListener('click', async ()=>{
       if(coach.isActive() && !coach.allow('sfx')) return;
       prefs.audio.sfx = !prefs.audio.sfx; save(); reflectAudioButtons();
@@ -1176,11 +1223,13 @@ export default {
         sfx.clickSoft();
       });
       const restartT = mkBtn('🎓','Restart tutorial','Restart guided tutorial');
-      restartT.addEventListener('click', ()=> coach.start(true));
+      restartT.addEventListener('click', ()=>{
+        if (window.CoachTutorial?.launch) window.CoachTutorial.launch();
+      });
+
       pop.appendChild(reset);
       pop.appendChild(restartT);
       coach?.queueReposition?.();
-
     }
     rebuildSettings();
 
@@ -1192,9 +1241,8 @@ export default {
     document.addEventListener('fullscreenchange', handleResize);
     document.fonts?.addEventListener?.('loadingdone', ()=> coach?.queueReposition?.());
 
-
     // visibility → resume audio if user enabled music
-    document.addEventListener('visibilitychange', async ()=>{
+    const onVisibility = async ()=>{
       if(document.hidden){ if(!pauseStart) pauseStart=performance.now(); }
       else{
         if(pauseStart){ pausedAcc += performance.now()-pauseStart; pauseStart=null; }
@@ -1202,7 +1250,8 @@ export default {
           try{ await Tone.context.resume(); }catch{}
         }
       }
-    });
+    };
+    document.addEventListener('visibilitychange', onVisibility);
 
     // ------------------------------- Hints ---------------------------------------
     function doHint(apply){
@@ -1239,7 +1288,7 @@ export default {
       for(const bi of boxes){
         const br0=(Math.floor(bi/boxesPerRow))*BR, bc0=(bi%boxesPerRow)*BC;
         for(const d of shuffle(DIGITS(), rnd)){
-          const places=[]; for(let r=br0;r<br0+BR;r++) for(let c=bc0;c<bc+BC;c++) if(!grid[r][c] && cand[r][c].has(d)) places.push({r,c});
+          const places=[]; for(let r=br0;r<br0+BR;r++) for(let c=bc0;c<bc0+BC;c++) if(!grid[r][c] && cand[r][c].has(d)) places.push({r,c});
           if(places.length===1) return presentHint({...places[0], d, kind:'hidden-box'}, apply);
         }
       }
@@ -1265,7 +1314,6 @@ export default {
         const raw = safeGetItem(timesKey);
         const all = raw? JSON.parse(raw) : [];
         all.push({ variant: currentVariant.key, difficulty, ms, at: Date.now() });
-        // keep only last 200 to avoid bloat
         while(all.length>200) all.shift();
         safeSetItem(timesKey, JSON.stringify(all));
       }catch{}
@@ -1284,43 +1332,88 @@ export default {
       return `${m}:${String(ss).padStart(2,'0')}`;
     }
 
+    // OPTIONAL: allow coach to flip prefs temporarily
+    if (!api.setPrefs) {
+      // deep-merge tiny helper
+      function deepMerge(base, patch){
+        if(!patch || typeof patch!=='object') return base;
+        Object.keys(patch).forEach(k=>{
+          if(patch[k] && typeof patch[k]==='object' && !Array.isArray(patch[k])){
+            base[k] = deepMerge(base[k] || {}, patch[k]);
+          }else{
+            base[k] = patch[k];
+          }
+        });
+        return base;
+      }
+      // expose
+      api.setPrefs = (patch)=>{ prefs = deepMerge(prefs, patch||{}); save(); draw(); };
+    }
+
+    // OPTIONAL: visual input locks (coach also gates behavior via coach.allow)
+    if (!api.lockInput) {
+      api.lockInput = (locks)=>{
+        // Toolbar
+        const btns = controls.querySelectorAll('.sd-btn');
+        btns.forEach(btn=>{
+          if(!locks || !locks.toolbar){
+            btn.disabled = false;
+          }else if(locks.toolbar===true){
+            btn.disabled = true;
+          }else if(locks.toolbar.allow){
+            const label = btn.textContent?.trim() || '';
+            const allowed = locks.toolbar.allow.some(k=> label.includes(k));
+            btn.disabled = !allowed;
+          }
+        });
+        // Hotel
+        const hotelEl = stage?.querySelector?.('.sd-hotel');
+        if(hotelEl){
+          hotelEl.querySelectorAll('.sd-hbtn').forEach(b=> b.disabled = !!(locks && locks.hotel));
+          hotelEl.style.opacity = (locks && locks.hotel) ? .5 : 1;
+        }
+        // Board (visual dim only — actual gating already uses coach.allow)
+        board.style.filter = (locks && locks.board) ? 'grayscale(0.2) brightness(0.9)' : '';
+        board.style.pointerEvents = (locks && locks.board) ? 'none' : '';
+      };
+    }
+
+    // OPTIONAL: real sandbox swap (fallback already exists in coach as visual-only)
+    let _stash = null;
+    if (!api.loadSandboxBoard) {
+      api.loadSandboxBoard = async (emptyGrid)=>{
+        try{
+          _stash = {
+            grid: clone(grid), given: clone(given),
+            puzzleInitial: clone(puzzleInitial),
+            prefs: JSON.parse(JSON.stringify(prefs||{})),
+            sel: sel ? { ...sel } : null
+          };
+          grid = clone(emptyGrid);
+          given = grid.map(r=> r.map(v=> v!==0));
+          puzzleInitial = clone(grid);
+          undoStack.length=0; redoStack.length=0; sel=null;
+          draw(); save();
+        }catch{}
+      };
+    }
+    if (!api.restoreBoard) {
+      api.restoreBoard = ()=>{
+        if(!_stash) return;
+        grid = clone(_stash.grid); given = clone(_stash.given); puzzleInitial = clone(_stash.puzzleInitial);
+        prefs = _stash.prefs || prefs; sel = _stash.sel || null;
+        undoStack.length=0; redoStack.length=0;
+        _stash = null; draw(); save();
+      };
+    }
+
+
     // Boot
     sizeStage();
     if(!tryLoad(saveKey())) resetGame({ daily:false });
     setTimeout(()=>board.focus(),0);
 
-    // -------------------------- Coach Integration --------------------------------
-    coach = makeSudokuCoach({
-      wrap, board, controls, topbar, statusEl: status, progressEl: pbar,
-      getState: ()=> ({
-        N, BR, BC, prefs,
-        isSolved: isSolved(),
-        hasSelection: !!sel,
-        selection: sel,
-        hotelDigit: hotelDigit
-      }),
-      api: {
-        draw, select:(rc)=>{ sel=rc; draw(); }, setHotelDigit:(n)=>{ hotelDigit=n; draw(); },
-        place:(r,c,n)=> attemptPlace(r,c,n,false), canPlace:(r,c,n)=> (!given[r][c] && grid[r][c]===0 && validAt(r,c,n)),
-        focusBoard: ()=> board.focus(),
-        ping: (k)=> pingSfx(k),
-        checkWrong: ()=> checkWrongCellsFlash(),
-        eraseWrong: ()=> eraseWrongCells(),
-        toggleMusic: ()=> btnMusic.click(),
-        toggleSfx: ()=> btnSfx.click(),
-        newGameDaily: ()=> btnDaily.click(),
-        newGameRng:   ()=> btnNew.click(),
-        undo: ()=> doUndo(),
-        redo: ()=> doRedo(),
-        startOver: ()=> btnStartOver.click(),
-        showHelpPopover: ()=> { if(!pop.classList.contains('open')) btnSettings.click(); }
-      },
-      text: { setStatus },
-      timing: { NEXT_APPEAR_MS, AUTO_ADV_IDLE_MS, IDLE_AFTER_INTERACT_MS }
-    });
 
-    // First-time tutorial (durable across versions)
-    try{ const seen = safeGetItem(tutSeenKey); if(!seen){ coach.start(false); safeSetItem(tutSeenKey,'1'); } }catch{}
 
     // ------------------------------- Utilities ---------------------------------
     function labelForDiff(d){ const map={ supereasy:'Super Easy', easy:'Easy', medium:'Medium', hard:'Hard', expert:'Expert' }; return map[d]||'Medium'; }
@@ -1547,11 +1640,20 @@ export default {
     // -------------------------------- Disposal -----------------------------------
     return {
       dispose(){
-        document.removeEventListener('visibilitychange', ()=>{});
+        // listeners
         document.removeEventListener('keydown', onKeyDown);
         document.removeEventListener('keyup', onKeyUp);
+        document.removeEventListener('mousedown', clearTransientOnMouseDown, true);
+        document.removeEventListener('mousedown', deselectOnOutsideMouseDown);
         window.removeEventListener('resize', handleResize);
+        document.removeEventListener('fullscreenchange', handleResize);
+        document.removeEventListener('visibilitychange', onVisibility);
+        wrap.removeEventListener('pointerdown', tryUnlockOnce, true);
+        wrap.removeEventListener('keydown', tryUnlockOnce, true);
+        wrap.removeEventListener('touchstart', tryUnlockOnce, true);
+        // observers
         ro.disconnect();
+        // audio
         music.setEnabled(false);
       }
     };
