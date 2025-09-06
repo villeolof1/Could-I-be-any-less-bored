@@ -282,41 +282,6 @@
     }
   }
 
-  async function placeOneThenUndoRedo(stage){
-    // Lock a specific empty cell, ask to type any digit, then Undo, then Redo
-    const N = stage.state.N;
-    let target = null;
-    for(let r=0;r<N;r++){ for(let c=0;c<N;c++){ if(stage.state.grid[r][c]===0 && !stage.state.given?.[r]?.[c]){ target={r,c}; break; } } if(target) break; }
-    if(!target) return;
-
-    stage.lockSelectionToCell(target.r, target.c);
-    stage.select(target);
-    stage.showGuideTarget(target.r, target.c);
-    stage.say(`Type <b>any digit</b> to place it here.`);
-
-    const before = countFilled(stage);
-    await wait(200);
-    // wait until the target cell is filled
-    await new Promise(res=>{
-      const id = setInterval(()=>{
-        if(stage.state.grid[target.r][target.c]){ clearInterval(id); res(); }
-      }, 60);
-    });
-
-    stage.hideGuideTarget();
-    stage.unlockSelectionLock();
-
-    // Undo
-    await guideTo(stage, stage.controlsMap?.undo, `Now tap <b>Undo</b>.`);
-    await waitForButtonClick(stage, 'undo');
-    await waitForFilledDelta(stage, -999, 1200); // give it a moment to reduce
-    // Redo
-    await guideTo(stage, stage.controlsMap?.redo, `And tap <b>Redo</b> to bring it back.`);
-    await waitForButtonClick(stage, 'redo');
-    // small wait
-    await wait(400);
-  }
-
   // ------------------------------- MAIN TUTORIAL --------------------------------
   async function runTutorial(stage){
     ensureSelectionLockShims(stage);
@@ -379,13 +344,10 @@
     // Hint (guaranteed)
     await clickHintAndConfirm(stage);
 
-    // Undo / Redo
-    await placeOneThenUndoRedo(stage);
-
-    // New again — let player observe the rain of digits (game’s own behavior)
+      // New again — start a fresh puzzle
     await guideTo(stage, stage.controlsMap?.new, `Hit <b>New</b> any time to reshuffle.`);
     await waitForButtonClick(stage, 'new');
-    await wait(1200);
+    await wait(200);
 
     // Settings
     await guideTo(stage, stage.controlsMap?.settings, `Help & settings live here — and you can replay me anytime.`);

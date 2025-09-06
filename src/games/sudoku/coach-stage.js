@@ -271,16 +271,7 @@
       }
       .sd-cands span{ width:100%; text-align:center; }
 
-      /* Morph layer (tiles look exactly like cells) */
-      .cs-layer{ position:absolute; left:0; top:0; pointer-events:none; z-index:60; }
-      .m-tile, .m-mega, .m-piece{
-        position:absolute; border-radius:10px;
-        background: var(--panel);
-        border: 1px solid var(--ring);
-        box-shadow: inset 0 0 0 1px rgba(255,255,255,.04), 0 4px 16px rgba(0,0,0,.28);
-        will-change: transform, opacity, border-radius, filter;
-        transition: transform 420ms cubic-bezier(.18,.9,.2,1), opacity 220ms ease, border-radius 320ms ease, filter 240ms ease;
-      }
+
 
       /* Hotel keypad */
       .sd-hotel{ display:grid; grid-template-columns: repeat(auto-fill,minmax(48px,1fr)); gap:6px; width:100%; max-width:560px; }
@@ -295,15 +286,6 @@
       .sd-ovl.err-peer.show{ box-shadow: inset 0 0 0 9999px var(--errFill); transition: box-shadow var(--errFadeMs); }
       .sd-ovl.err-cell.show{ box-shadow: inset 0 0 0 9999px var(--errFill); transition: box-shadow var(--errFadeMs); }
       .sd-ovl.cele-scope.show{ box-shadow: inset 0 0 0 9999px var(--celeScope); transition: box-shadow var(--celeFadeMs); }
-
-      /* Falling digits (new puzzle) */
-      .fall-wrap{ position:absolute; inset:0; pointer-events:none; z-index:35; }
-      .fall-num{
-        position:absolute; text-align:center;
-        font-weight:900; font-size: clamp(14px, calc(var(--stageSize) / 20), 34px);
-        line-height:1; color:#d0e1ff; opacity:0;
-        will-change: top, opacity;
-      }
 
       @media (max-width: 420px) {
         .sd-controls { gap:6px; }
@@ -408,7 +390,6 @@
     let currentTarget = null;
     let currentAnswer = null;
 
-    let morphBusy = false;
 
     // ---------- Helpers ----------
     function mkSymbols(n){ const arr=[]; for(let i=1;i<=Math.min(9,n);i++) arr.push(String(i)); for(let v=10; v<=n; v++) arr.push(String.fromCharCode(55+v)); return arr; }
@@ -507,9 +488,10 @@
     });
     btnFullscreen.addEventListener('click', ()=>{ if(locks.toolbar) return; toggleFullscreen(); blip(150,.10); });
 
-    btnNew.addEventListener('click', async ()=>{
+    btnNew.addEventListener('click', ()=>{
       if(locks.toolbar) return;
-      await newPuzzleCinematic();
+      solution = genSolved();
+      grid = empty(N); given = grid.map(r=>r.map(()=>false)); sel=null; draw();
       blip(150,.10);
     });
 
@@ -739,206 +721,10 @@
       return null;
     }
 
-    // ---------- Kill any legacy slime/goo artifacts ----------
-    function killLegacyGooArtifacts(){
-      document.querySelectorAll('.split-layer,.cs-slime-layer,.cs-goo,.cs-blob,#cs-goo-defs').forEach(n=>{ try{ n.remove(); }catch{} });
-    }
-
-    // ---------- NEW morph: combine → mega → “knife split” → settle ----------
     async function runMorphCombineMegaSlice(toKey){
-      if(morphBusy) return; morphBusy = true;
-      let layer;
-      try{
-        ensureMountedSync();
-        killLegacyGooArtifacts();
-        await nextFrame();
-
-        const boardRect = board.getBoundingClientRect();
-        const wrapRect  = wrap.getBoundingClientRect();
-        layer = document.createElement('div');
-        layer.className = 'cs-layer';
-        layer.style.width  = boardRect.width + 'px';
-        layer.style.height = boardRect.height + 'px';
-        layer.style.left   = (boardRect.left - wrapRect.left) + 'px';
-        layer.style.top    = (boardRect.top  - wrapRect.top ) + 'px';
-        wrap.appendChild(layer);
-
-        layer.querySelectorAll('.m-piece,.m-mega,.m-tile').forEach(n=>n.remove());
-
-        const cells = [...board.querySelectorAll('.sd-cell')];
-        const rects = cells.map(c=> c.getBoundingClientRect());
-        const baseL = boardRect.left, baseT = boardRect.top;
-        const targetN = (toKey==='mini4'?4 : (toKey==='giant16'?16:9));
-
-        if(rects.length===0){
-          doSetVariant(toKey);
-          grid = empty(targetN);
-          given = grid.map(r=> r.map(()=>false));
-          return;
-        }
-
-        const tiles=[];
-        for(const r of rects){
-          const t=document.createElement('div'); t.className='m-tile';
-          t.style.width = r.width+'px'; t.style.height=r.height+'px';
-          const x0=(r.left-baseL), y0=(r.top-baseT);
-          t.style.transform=`translate(${x0}px, ${y0}px)`;
-          layer.appendChild(t); tiles.push(t);
-        }
-        await nextFrame();
-
-        const cx = boardRect.width/2, cy=boardRect.height/2;
-        tiles.forEach(t=>{
-          const w=parseFloat(t.style.width)||0, h=parseFloat(t.style.height)||0;
-          t.style.transitionTimingFunction = 'cubic-bezier(.18,.9,.2,1.05)';
-          t.style.transform = `translate(${cx - w/2}px, ${cy - h/2}px) scale(1.035)`;
-          t.style.borderRadius='16px';
-          t.style.filter='saturate(1.04) brightness(1.02)';
-        });
-        await wait(140);
-
-        const curCW = rects[0].width, curCH=rects[0].height;
-        const mega = document.createElement('div'); mega.className='m-mega';
-        mega.style.width=`${curCW}px`; mega.style.height=`${curCH}px`;
-        mega.style.transform = `translate(${(cx - curCW/2)}px, ${(cy - curCH/2)}px)`;
-        layer.appendChild(mega);
-        await nextFrame();
-        tiles.forEach(t=> t.style.opacity='0');
-
-        const cw = boardRect.width / targetN;
-        const ch = boardRect.height / targetN;
-        const totalW = cw*targetN, totalH = ch*targetN;
-        const padX = (boardRect.width  - totalW)/2;
-        const padY = (boardRect.height - totalH)/2;
-
-        mega.style.width  = `${Math.max(8,totalW-2)}px`;
-        mega.style.height = `${Math.max(8,totalH-2)}px`;
-        mega.style.transform = `translate(${Math.round(padX)}px, ${Math.round(padY)}px)`;
-        mega.style.borderRadius='18px';
-        await wait(210);
-        tiles.forEach(t=> t.remove());
-
-        const pieces=[];
-        const cCol = (targetN/2-0.5), cRow=(targetN/2-0.5);
-        for(let r=0;r<targetN;r++){
-          for(let c=0;c<targetN;c++){
-            const p=document.createElement('div'); p.className='m-piece';
-            p.style.width=`${cw-2}px`; p.style.height=`${ch-2}px`;
-            p.style.transform = `translate(${Math.round(padX + cw*cCol)}px, ${Math.round(padY + ch*cRow)}px) scale(.965)`;
-            p.style.opacity='0.001';
-            layer.appendChild(p);
-            pieces.push({p,r,c});
-          }
-        }
-        await nextFrame();
-
-        const jitter = Math.min(10, Math.max(4, Math.round(cw*0.14)));
-        pieces.forEach(({p,r,c})=>{
-          const jx = ((c - cCol)) * (jitter/4);
-          const jy = ((r - cRow)) * (jitter/4);
-          const x = Math.round(padX + cw*cCol + jx);
-          const y = Math.round(padY + ch*cRow + jy);
-          p.style.opacity='1';
-          p.style.transform = `translate(${x}px, ${y}px) scale(.985)`;
-        });
-        await wait(110);
-
-        pieces.forEach(({p,r,c})=>{
-          const x = Math.round(padX + c*cw);
-          const y = Math.round(padY + r*ch);
-          p.style.transitionTimingFunction = 'cubic-bezier(.16,.9,.2,1.12)';
-          p.style.transform = `translate(${x}px, ${y}px) scale(1)`;
-        });
-
-        await wait(210);
-        doSetVariant(toKey);
-        grid = empty(targetN);
-        given = grid.map(r=> r.map(()=>false));
-
-        mega.style.opacity='0';
-        await wait(160);
-      } finally {
-        try{ layer?.remove(); }catch{}
-        killLegacyGooArtifacts();
-        morphBusy = false;
-      }
-    }
-
-    // ---------- New puzzle cinematic ----------
-    async function newPuzzleCinematic(){
-      const allNums = board.querySelectorAll('.sd-num');
-      allNums.forEach((el,k)=>{
-        el.style.transition='transform 160ms ease, opacity 160ms ease, filter 160ms ease';
-        const dx=(Math.random()*8-4), dy=(Math.random()*8-4);
-        setTimeout(()=>{
-          el.style.transform=`translate(${dx}px,${dy}px) scale(1.05)`;
-          el.style.filter='blur(1px)';
-          el.style.opacity='0';
-        }, k*4);
-      });
-      await wait(180);
-
-      solution = genSolved();
-      grid = empty(N); given = grid.map(r=>r.map(()=>false)); sel=null; draw();
-
-      const fall = document.createElement('div'); fall.className='fall-wrap';
-      board.appendChild(fall);
-
-      const brect = board.getBoundingClientRect();
-      const cw = brect.width / N;
-
-      const idxs = [...Array(N*N)].map((_,i)=>i);
-      const keepCount = Math.floor((N*N)/2);
-      const keep = new Set(); shuffle(idxs, mulberry32((Math.random()*1e9)|0)).forEach(i=>{ if(keep.size<keepCount) keep.add(i); });
-
-      const kept=[]; const pass=[];
-      for(const idx of idxs){
-        const r=(idx/N|0), c=idx%N;
-        const sp = document.createElement('div'); sp.className='fall-num';
-        sp.style.left = (c*cw)+'px'; sp.style.width = cw+'px';
-        sp.style.top  = (-brect.height)+'px';
-        sp.textContent = valToSym(solution[r][c]);
-        sp.dataset.r=r; sp.dataset.c=c;
-        fall.appendChild(sp);
-        if(keep.has(idx)) kept.push(sp);
-        else{
-          pass.push(sp);
-          const iv=setInterval(()=>{ sp.textContent=valToSym(1+Math.floor(Math.random()*N)); },60);
-          sp.dataset.iv=iv;
-        }
-      }
-
-      await nextFrame();
-
-      const dropMs = 360;
-      const stagger = 24;
-      let delay=0;
-      kept.forEach(sp=>{
-        const r=+sp.dataset.r, c=+sp.dataset.c;
-        sp.style.transition = `top ${dropMs}ms cubic-bezier(.2,.9,.2,1) ${delay}ms, opacity ${dropMs}ms ${delay}ms`;
-        sp.style.top = (r*cw)+'px';
-        sp.style.opacity='1';
-        setTimeout(()=>{
-          grid[r][c]=solution[r][c]; given[r][c]=true; draw();
-          const rip = document.createElement('div'); rip.className='ripple';
-          rip.style.setProperty('--x','50%'); rip.style.setProperty('--y','50%');
-          const cell = cellEl(r,c); if(cell){ cell.appendChild(rip); setTimeout(()=> rip.remove(),620); }
-        }, delay+dropMs);
-        delay += stagger;
-      });
-
-      pass.forEach(sp=>{
-        const r=+sp.dataset.r;
-        sp.style.transition = `top ${dropMs}ms cubic-bezier(.2,.9,.2,1), opacity 120ms ease ${dropMs}ms`;
-        sp.style.top = (r*cw)+'px';
-        sp.style.opacity='1';
-        setTimeout(()=>{ clearInterval(+sp.dataset.iv); sp.style.opacity='0'; }, dropMs);
-        setTimeout(()=>{ sp.remove(); }, dropMs+140);
-      });
-
-      await wait(dropMs + delay + 140);
-      fall.remove();
-      draw();
+      doSetVariant(toKey);
+      grid = empty(N);
+      given = grid.map(r=> r.map(()=>false));
     }
 
     // ---------- Effects ----------
@@ -1442,8 +1228,6 @@
       async runMosaic(toKey, { sayLine, sweat } = {}){
         if(sweat) this.setMood('sweat');
         await runMorphCombineMegaSlice(toKey);
-        grid = empty(N);
-        given = grid.map(r=> r.map(()=>false));
         draw();
         if(sayLine) this.say(sayLine);
         if(sweat) setTimeout(()=> this.setMood(null), 900);
@@ -1451,9 +1235,7 @@
       async runMosaicGoo(toKey, opts){ await this.runMosaic(toKey, opts); },     // alias
       async transitionVariantCells(toKey){ await runMorphCombineMegaSlice(toKey); }, // alias
 
-      // New puzzle
-      rainThenStickHalf: newPuzzleCinematic,
-      async danceDigitsHalfThenSettle(){ await newPuzzleCinematic(); },
+      // New puzzle animation removed
 
       setInputInterceptor(fn){ inputInterceptor = fn; },
 
