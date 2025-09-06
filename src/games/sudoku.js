@@ -765,16 +765,18 @@ export default {
         cell.appendChild(ovl);
 
         const key = `${r},${c}`;
-        const stuck = stickyCands.get(key);
-        if(v===0 && stuck){
-          const cd=document.createElement('div'); cd.className='sd-cands';
-          for(const d of DIGITS()){
-            const sp=document.createElement('span');
-            sp.textContent = stuck.has(d) ? valToSym(d) : '';
+        if (v === 0 && stickyCands.has(key)) {
+          // Recompute live every draw so it updates as the grid changes
+          const live = candidatesFor(r, c);
+          const cd = document.createElement('div'); cd.className = 'sd-cands';
+          for (const d of DIGITS()) {
+            const sp = document.createElement('span');
+            sp.textContent = live.has(d) ? valToSym(d) : '';
             cd.appendChild(sp);
           }
           cell.appendChild(cd);
-        } else if(v!==0){
+        } else if (v !== 0) {
+          // Unpin when filled
           stickyCands.delete(key);
         }
 
@@ -813,10 +815,11 @@ export default {
           if(grid[r][c]) return;
           const key = `${r},${c}`;
           if(stickyCands.has(key)) stickyCands.delete(key);
-          else stickyCands.set(key, candidatesFor(r,c));
+          else stickyCands.add(key);
           draw();
           pingSfx('select'); coach.react('tip');
         });
+
 
         cell.addEventListener('dragenter', e=>{
           e.preventDefault();
