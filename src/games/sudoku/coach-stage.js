@@ -285,24 +285,10 @@
       /* Falling digits (new puzzle) */
       .fall-wrap{ position:absolute; inset:0; pointer-events:none; z-index:35; }
       .fall-num{
-        position:absolute; left:0; right:0; text-align:center;
+        position:absolute; text-align:center;
         font-weight:900; font-size: clamp(14px, calc(var(--stageSize) / 20), 34px);
-        line-height:1; color:#d0e1ff; opacity:0; transform: translateY(-120%);
-        will-change: transform, opacity;
-      }
-      .fall-num.stick{ animation: fallStick .9s cubic-bezier(.2,.9,.2,1) forwards; }
-      .fall-num.pass{  animation: fallPass  1.0s cubic-bezier(.2,.9,.2,1) forwards; }
-      @keyframes fallStick{
-        0%{   opacity:0; transform: translateY(-120%);}
-        20%{  opacity:1;}
-        70%{  transform: translateY(0);}
-        84%{  transform: translateY(-14%);}
-        100%{ transform: translateY(0);}
-      }
-      @keyframes fallPass{
-        0%{   opacity:0; transform: translateY(-120%);}
-        20%{  opacity:1;}
-        100%{ opacity:0; transform: translateY(180%);}
+        line-height:1; color:#d0e1ff; opacity:0;
+        will-change: top, opacity;
       }
 
       @media (max-width: 420px) {
@@ -747,6 +733,7 @@
     // ---------- NEW morph: combine → mega → “knife split” → settle ----------
     async function runMorphCombineMegaSlice(toKey){
       if(morphBusy) return; morphBusy = true;
+      let layer;
       try{
         ensureMountedSync();
         killLegacyGooArtifacts();
@@ -754,7 +741,7 @@
 
         const boardRect = board.getBoundingClientRect();
         const wrapRect  = wrap.getBoundingClientRect();
-        const layer = document.createElement('div');
+        layer = document.createElement('div');
         layer.className = 'cs-layer';
         layer.style.width  = boardRect.width + 'px';
         layer.style.height = boardRect.height + 'px';
@@ -762,7 +749,6 @@
         layer.style.top    = (boardRect.top  - wrapRect.top ) + 'px';
         wrap.appendChild(layer);
 
-        // clear any earlier morph pieces that somehow stuck
         layer.querySelectorAll('.m-piece,.m-mega,.m-tile').forEach(n=>n.remove());
 
         const cells = [...board.querySelectorAll('.sd-cell')];
@@ -770,10 +756,9 @@
         const baseL = boardRect.left, baseT = boardRect.top;
 
         if(rects.length===0){
-          doSetVariant(toKey); draw(); layer.remove(); return;
+          doSetVariant(toKey); draw(); return;
         }
 
-        // tiles mimic real cells
         const tiles=[];
         for(const r of rects){
           const t=document.createElement('div'); t.className='m-tile';
@@ -784,7 +769,6 @@
         }
         await nextFrame();
 
-        // Phase 1 — converge toward board center
         const cx = boardRect.width/2, cy=boardRect.height/2;
         tiles.forEach(t=>{
           const w=parseFloat(t.style.width)||0, h=parseFloat(t.style.height)||0;
@@ -795,7 +779,6 @@
         });
         await wait(140);
 
-        // Phase 2 — mega cell grows to the grid bounds
         const curCW = rects[0].width, curCH=rects[0].height;
         const mega = document.createElement('div'); mega.className='m-mega';
         mega.style.width=`${curCW}px`; mega.style.height=`${curCH}px`;
@@ -818,7 +801,6 @@
         await wait(210);
         tiles.forEach(t=> t.remove());
 
-        // Phase 3 — invisible “knife” split to pieces then settle
         const pieces=[];
         const cCol = (targetN/2-0.5), cRow=(targetN/2-0.5);
         for(let r=0;r<targetN;r++){
@@ -844,7 +826,6 @@
         });
         await wait(110);
 
-        // settle to final slots with tiny overshoot
         pieces.forEach(({p,r,c})=>{
           const x = Math.round(padX + c*cw);
           const y = Math.round(padY + r*ch);
@@ -853,21 +834,20 @@
         });
 
         await wait(210);
-        // Switch variant & redraw beneath pieces
         doSetVariant(toKey);
         draw();
 
         mega.style.opacity='0';
         await wait(160);
-        layer.remove();
       } finally {
+        try{ layer?.remove(); }catch{}
+        killLegacyGooArtifacts();
         morphBusy = false;
       }
     }
 
     // ---------- New puzzle cinematic ----------
     async function newPuzzleCinematic(){
-      // fade existing numbers gently
       const allNums = board.querySelectorAll('.sd-num');
       allNums.forEach((el,k)=>{
         el.style.transition='transform 220ms ease, opacity 220ms ease, filter 220ms ease';
@@ -893,28 +873,50 @@
       const keepCount = Math.floor((N*N)/2);
       const keep = new Set(); shuffle(idxs, mulberry32((Math.random()*1e9)|0)).forEach(i=>{ if(keep.size<keepCount) keep.add(i); });
 
+      const kept=[]; const pass=[];
       for(const idx of idxs){
         const r=(idx/N|0), c=idx%N;
         const sp = document.createElement('div'); sp.className='fall-num';
         sp.style.left = (c*cw)+'px'; sp.style.width = cw+'px';
-        sp.style.top  = '0px';
+        sp.style.top  = (-brect.height)+'px';
         sp.textContent = valToSym(solution[r][c]);
-        sp.classList.add(keep.has(idx)?'stick':'pass');
-        sp.style.animationDuration = keep.has(idx)? (0.82 + Math.random()*0.18)+'s' : (0.92 + Math.random()*0.18)+'s';
+        sp.dataset.r=r; sp.dataset.c=c;
         fall.appendChild(sp);
-
-        if(keep.has(idx)){
-          const delay = 680 + Math.random()*240;
-          setTimeout(()=>{
-            grid[r][c]=solution[r][c]; given[r][c]=true; draw();
-            const rip = document.createElement('div'); rip.className='ripple';
-            rip.style.setProperty('--x', '50%'); rip.style.setProperty('--y', '50%');
-            const cell = cellEl(r,c); if(cell){ cell.appendChild(rip); setTimeout(()=> rip.remove(), 620); }
-          }, delay);
+        if(keep.has(idx)) kept.push(sp);
+        else{
+          pass.push(sp);
+          const iv=setInterval(()=>{ sp.textContent=valToSym(1+Math.floor(Math.random()*N)); },80);
+          sp.dataset.iv=iv;
         }
       }
 
-      await wait(1100);
+      await nextFrame();
+
+      let delay=0;
+      kept.forEach(sp=>{
+        const r=+sp.dataset.r, c=+sp.dataset.c;
+        sp.style.transition = `top 0.9s cubic-bezier(.2,.9,.2,1) ${delay}ms, opacity 0.9s ${delay}ms`;
+        sp.style.top = (r*cw)+'px';
+        sp.style.opacity='1';
+        setTimeout(()=>{
+          grid[r][c]=solution[r][c]; given[r][c]=true; draw();
+          const rip = document.createElement('div'); rip.className='ripple';
+          rip.style.setProperty('--x','50%'); rip.style.setProperty('--y','50%');
+          const cell = cellEl(r,c); if(cell){ cell.appendChild(rip); setTimeout(()=> rip.remove(),620); }
+        }, delay+900);
+        delay += 80;
+      });
+
+      pass.forEach(sp=>{
+        const r=+sp.dataset.r;
+        sp.style.transition = `top 0.9s cubic-bezier(.2,.9,.2,1), opacity 0.3s ease 0.9s`;
+        sp.style.top = (r*cw)+'px';
+        sp.style.opacity='1';
+        setTimeout(()=>{ clearInterval(+sp.dataset.iv); sp.style.opacity='0'; }, 900);
+        setTimeout(()=>{ sp.remove(); }, 1200);
+      });
+
+      await wait(1200 + delay);
       fall.remove();
       draw();
     }

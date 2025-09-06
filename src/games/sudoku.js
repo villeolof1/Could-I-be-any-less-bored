@@ -241,6 +241,7 @@ export default {
     const btnSfx       = mkBtn('🔊','SFX','Toggle sound effects');
     const btnMusic     = mkBtn('🎵','Music','Toggle music');
     const btnFullscreen= mkBtn('⛶','Fullscreen','Toggle fullscreen'); btnFullscreen.dataset.coachFs='1';
+    const setTutorialBtnLabel = (start)=>{ const l=btnTutorial.querySelector('span:last-child'); if(l) l.textContent = start ? 'Start tutorial' : 'Tutorial'; };
 
     // Help popover (closed by default)
     const popWrap = document.createElement('div'); popWrap.className='sd-pop-wrap';
@@ -296,6 +297,7 @@ export default {
     const prefsKey = `${STORAGE_NS}:prefs`;
     const timesKey = `${STORAGE_NS}:times`;
     const tutSeenKey = 'sudoku:tutorial:seen'; // durable across versions
+    const tutSkipKey = 'sudoku:tutorial:skip';
 
     // Quota-safe set
     function safeSetItem(k,v){
@@ -1150,12 +1152,25 @@ export default {
     btnHint.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('hint')) return; if(prefs.help.enabled && prefs.help.hints && !showSolutionHold) { doHint(true); pingSfx('hint'); coach.react('hint'); } });
     btnCheck.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('check')) return; if(!prefs.help.mistakeFeedback) { checkWrongCellsFlash(); pingSfx('toggle'); coach.react('check'); } });
     btnEraseWrong.addEventListener('click', ()=>{ if(coach.isActive() && !coach.allow('erase')) return; if(!prefs.help.mistakeFeedback) { eraseWrongCells(); pingSfx('clear'); coach.react('erase'); } });
-    btnTutorial.addEventListener('click', ()=>{
+
+    function startTutorial(){
       if (window.CoachTutorial && typeof window.CoachTutorial.launch === 'function') {
-        window.CoachTutorial.launch();
+        window.CoachTutorial.launch().finally(()=>{
+          coach.stop?.();
+          document.querySelectorAll('.coach-overlay,.sd-coach').forEach(el=> el.remove());
+        });
+        localStorage.setItem(tutSeenKey,'1');
       } else {
         console.warn('CoachTutorial not loaded');
       }
+    }
+
+    btnTutorial.addEventListener('click', ()=>{
+      if(localStorage.getItem(tutSkipKey)==='1'){
+        localStorage.removeItem(tutSkipKey);
+        setTutorialBtnLabel(false);
+      }
+      startTutorial();
     });
 
     btnSfx.addEventListener('click', async ()=>{
@@ -1200,10 +1215,16 @@ export default {
 
       pop.appendChild(h('Help'));
       pop.appendChild(row('Enable help', toggle(prefs.help.enabled, v=>{ prefs.help.enabled=v; save(); updateHelpUI(); draw(); })));
-      pop.appendChild(row('Mistake feedback', toggle(prefs.help.mistakeFeedback, v=>{ prefs.help.mistakeFeedback=v; save(); updateHelpUI(); draw(); })));
+      pop.appendChild(row('Mistake feedback', toggle(prefs.help.mistakeFeedback, v=>{ prefs.help.mistakeFeedback=v; save(); updateHelpUI(); draw(); }))); 
       pop.appendChild(row('Valid spots (when number armed)', toggle(prefs.help.showValidOnHotel, v=>{ prefs.help.showValidOnHotel=v; save(); draw(); })));
       pop.appendChild(row('Same-digit highlight', toggle(prefs.help.sameDigit, v=>{ prefs.help.sameDigit=v; save(); draw(); })));
       pop.appendChild(row('Row/Col bars (selection)', toggle(prefs.help.showRowColBars, v=>{ prefs.help.showRowColBars=v; save(); draw(); })));
+
+      pop.appendChild(row('Skip tutorial', toggle(localStorage.getItem(tutSkipKey)==='1', v=>{
+        if(v){ localStorage.setItem(tutSkipKey,'1'); }
+        else{ localStorage.removeItem(tutSkipKey); }
+        setTutorialBtnLabel(v);
+      })));
 
       // Best times (top 5 for current variant+diff)
       const best = getBestTimes(currentVariant.key, difficulty).slice(0,5);
@@ -1235,6 +1256,12 @@ export default {
       coach?.queueReposition?.();
     }
     rebuildSettings();
+
+    const skipTutorial = localStorage.getItem(tutSkipKey)==='1';
+    setTutorialBtnLabel(skipTutorial);
+    if(!skipTutorial && !localStorage.getItem(tutSeenKey)){
+      startTutorial();
+    }
 
     btnSettings.addEventListener('click', (e)=>{ if(coach.isActive() && !coach.allow('settings')) return; e.stopPropagation(); pop.classList.toggle('open'); if(pop.classList.contains('open')) rebuildSettings(); sfx.clickSoft(); coach.queueReposition(); });
     document.addEventListener('click', (e)=>{ if(!popWrap.contains(e.target)) pop.classList.remove('open'); });
