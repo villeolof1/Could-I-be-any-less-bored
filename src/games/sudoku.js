@@ -168,17 +168,6 @@ export default {
       .sd-tipbtn:disabled{ opacity:.28; cursor:default; }
       .sd-tipbtn:hover:not(:disabled){ background:rgba(255,255,255,.10); }
 
-      /* audio gate overlay */
-      .sd-audio-gate{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:10000; pointer-events:none; }
-      .sd-audio-gate .sd-audio-btn{
-        pointer-events:auto;
-        padding:10px 14px; border-radius:999px; font-size:13px;
-        background:rgba(0,0,0,.65); color:var(--fg);
-        border:1px solid var(--ring); cursor:pointer;
-        backdrop-filter: blur(3px);
-      }
-      .sd-audio-gate.hidden{ display:none; }
-
       .sd-fx{ position:absolute; inset:0; z-index:var(--fxZ); pointer-events:none; display:block; }
 
       @media (max-width: 420px) {
@@ -189,13 +178,6 @@ export default {
     root.appendChild(css);
 
     const wrap = document.createElement('div'); wrap.className='sd-wrap'; root.appendChild(wrap);
-
-    // Audio unlock overlay (non-blocking)
-    const audioGate = document.createElement('div');
-    audioGate.className = 'sd-audio-gate hidden';
-    audioGate.innerHTML = `<button type="button" class="sd-audio-btn">Tap to enable sound</button>`;
-    wrap.appendChild(audioGate);
-    const audioBtn = audioGate.querySelector('.sd-audio-btn');
 
     // FX Canvas (confetti)
     const fxCanvas = document.createElement('canvas'); fxCanvas.className='sd-fx';
@@ -380,43 +362,23 @@ export default {
         }finally{
           audioInitPromise = null;
           reflectAudioButtons();
-          updateAudioGate();
         }
         return audioReady;
       })();
       return audioInitPromise;
     }
-
-    function updateAudioGate(){
-      try{
-        const suspended = !!Tone.context && Tone.context.state !== 'running';
-        const shouldShow = !audioReady || suspended;
-        audioGate.classList.toggle('hidden', !shouldShow);
-      }catch{
-        audioGate.classList.add('hidden');
-      }
-    }
-
-    // Clicking the pill tries to unlock
-    audioBtn.addEventListener('click', async (e)=>{
-      e.stopPropagation();
-      await ensureAudioReady(true);
-      updateAudioGate();
-    });
-
-    // Unlock on first gesture AND on the audioGate click
+    // Unlock audio on the first user gesture
     const tryUnlockOnce = ()=>{
       wrap.removeEventListener('pointerdown', tryUnlockOnce, true);
       wrap.removeEventListener('keydown', tryUnlockOnce, true);
       wrap.removeEventListener('touchstart', tryUnlockOnce, true);
-      ensureAudioReady(true).then(updateAudioGate);
+      ensureAudioReady(true);
     };
     wrap.addEventListener('pointerdown', tryUnlockOnce, true);
     wrap.addEventListener('keydown', tryUnlockOnce, true);
     wrap.addEventListener('touchstart', tryUnlockOnce, true);
 
     reflectAudioButtons();
-    updateAudioGate();
 
     // Variant params
     let N = currentVariant.N, BR=currentVariant.BR, BC=currentVariant.BC, SYMBOLS=currentVariant.symbols;

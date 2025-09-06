@@ -462,7 +462,8 @@
     }
     const ro = new ResizeObserver(sizeStage); ro.observe(wrap);
     window.addEventListener('resize', sizeStage);
-    document.addEventListener('fullscreenchange', ()=>{ attachToFullscreenContainerIfAny(); sizeStage(); });
+    function onFullscreenChange(){ attachToFullscreenContainerIfAny(); sizeStage(); }
+    document.addEventListener('fullscreenchange', onFullscreenChange);
 
     function setStatus(msg){ statusEl.textContent = msg||''; }
 
@@ -1299,7 +1300,7 @@
         document.removeEventListener('keydown', onKeyDown);
         document.removeEventListener('keyup', onKeyUp);
         window.removeEventListener('resize', sizeStage);
-        document.removeEventListener('fullscreenchange', sizeStage);
+        document.removeEventListener('fullscreenchange', onFullscreenChange);
         ro.disconnect();
         stopRoam();
         overlay.remove();
