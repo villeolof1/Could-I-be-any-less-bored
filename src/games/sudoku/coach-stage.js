@@ -1363,7 +1363,10 @@
       get state(){ return { N, BR, BC, grid: clone(grid), sel, hotelDigit, solution }; },
 
       // Always animate variant changes via mega morph
-      async setVariant(key){ await runMorphCombineMegaSlice(key); },
+      async setVariant(key){
+        await runMorphCombineMegaSlice(key);
+        draw();
+      },
 
       setSolution(sol){ solution = sol ? clone(sol) : null; draw(); },
       select(rc){ sel = rc ? { ...rc } : null; draw(); moveCoachNear(rc? cellEl(rc.r,rc.c)||board : board, 'left'); },
