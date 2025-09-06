@@ -475,13 +475,15 @@
       return b;
     }
 
+    const btnSkip      = mkBtn('⏭️','Skip','Skip tutorial','skip');
+    btnSkip.style.display = 'none';
     const btnNew       = mkBtn('🎲','New','New random puzzle','new');
     const btnHint      = mkBtn('💡','Hint','Smart hint','hint');
     const btnTutorial  = mkBtn('🎓','Tutorial','Show tutorial','tutorial');
     const btnFullscreen= mkBtn('⛶','Fullscreen','Toggle fullscreen','fs');
     const btnMusic     = mkBtn('🎵','Music','Toggle music','music');
     const btnSettings  = mkBtn('⚙️','Help','Help & tutorial','settings');
-    controls.append(btnNew, btnHint, btnTutorial, btnFullscreen, btnMusic, btnSettings);
+    controls.append(btnSkip, btnNew, btnHint, btnTutorial, btnFullscreen, btnMusic, btnSettings);
 
     let musicOn=false;
     function reflectAudioButtons(){
@@ -741,7 +743,7 @@
 
     // ---------- Kill any legacy slime/goo artifacts ----------
     function killLegacyGooArtifacts(){
-      document.querySelectorAll('.split-layer,.cs-slime-layer,.cs-goo,.cs-blob,#cs-goo-defs').forEach(n=>{ try{ n.remove(); }catch{} });
+      document.querySelectorAll('.split-layer,.cs-layer,.cs-slime-layer,.cs-goo,.cs-blob,#cs-goo-defs').forEach(n=>{ try{ n.remove(); }catch{} });
     }
 
     // ---------- NEW morph: combine → mega → “knife split” → settle ----------
@@ -890,20 +892,22 @@
       const cw = brect.width / N;
 
       const idxs = [...Array(N*N)].map((_,i)=>i);
+      shuffle(idxs, mulberry32((Math.random()*1e9)|0));
       const keepCount = Math.floor((N*N)/2);
-      const keep = new Set(); shuffle(idxs, mulberry32((Math.random()*1e9)|0)).forEach(i=>{ if(keep.size<keepCount) keep.add(i); });
 
-      for(const idx of idxs){
+      for(let i=0;i<idxs.length;i++){
+        const idx = idxs[i];
         const r=(idx/N|0), c=idx%N;
-        const sp = document.createElement('div'); sp.className='fall-num';
+        const keep = i < keepCount;
+        const sp = document.createElement('div');
+        sp.className = 'fall-num ' + (keep?'stick':'pass');
         sp.style.left = (c*cw)+'px'; sp.style.width = cw+'px';
         sp.style.top  = '0px';
         sp.textContent = valToSym(solution[r][c]);
-        sp.classList.add(keep.has(idx)?'stick':'pass');
-        sp.style.animationDuration = keep.has(idx)? (0.82 + Math.random()*0.18)+'s' : (0.92 + Math.random()*0.18)+'s';
+        sp.style.animationDuration = keep ? (0.82 + Math.random()*0.18)+'s' : (0.92 + Math.random()*0.18)+'s';
         fall.appendChild(sp);
 
-        if(keep.has(idx)){
+        if(keep){
           const delay = 680 + Math.random()*240;
           setTimeout(()=>{
             grid[r][c]=solution[r][c]; given[r][c]=true; draw();
@@ -912,6 +916,8 @@
             const cell = cellEl(r,c); if(cell){ cell.appendChild(rip); setTimeout(()=> rip.remove(), 620); }
           }, delay);
         }
+
+        await wait(40);
       }
 
       await wait(1100);
