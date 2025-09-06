@@ -11,31 +11,20 @@
   // ----------------------------- CORE SHIMS -------------------------------------
   function ensureSelectionLockShims(stage){
     if (stage.lockSelectionToCell && stage.unlockSelectionLock) return;
-    let lock = null;
-    function blockNav(e){
-      if(!lock) return;
-      const k = e.key;
-      if (k.startsWith('Arrow') || k==='Home' || k==='End' || k==='PageUp' || k==='PageDown'){
-        e.stopPropagation(); e.preventDefault();
-      }
-    }
+    let lock = false;
     function blockCellClick(e){
       if(!lock) return;
       const cell = e.target.closest?.('.sd-cell'); if(!cell) return;
-      const r=+cell.dataset.r, c=+cell.dataset.c;
-      if (r===lock.r && c===lock.c) return;
       e.stopPropagation(); e.preventDefault();
     }
     stage.lockSelectionToCell = (r,c)=>{
-      lock = {r,c};
-      try{ stage.select({r,c}); }catch{}
+      lock = true;
+      try{ if(Number.isInteger(r) && Number.isInteger(c)) stage.select({r,c}); }catch{}
       stage.board?.addEventListener('mousedown', blockCellClick, true);
-      document.addEventListener('keydown', blockNav, true);
     };
     stage.unlockSelectionLock = ()=>{
-      lock = null;
+      lock = false;
       try{ stage.board?.removeEventListener('mousedown', blockCellClick, true); }catch{}
-      document.removeEventListener('keydown', blockNav, true);
     };
   }
 
@@ -60,38 +49,8 @@
           animation: csRp .45s ease-out forwards; }
         @keyframes csRp { to{ transform:translate(-50%,-50%) scale(2.1); opacity:0; } }
 
-        /* slime overlay */
-        .cs-slime-layer{ position:absolute; left:0; top:0; pointer-events:none; }
-        .cs-goo{ filter:url(#cs-goo); }
-        .cs-blob{
-          position:absolute; width:10px; height:10px; border-radius:18px;
-          background:linear-gradient(135deg, rgba(170,215,255,.92), rgba(150,240,210,.92));
-          box-shadow:0 3px 14px rgba(0,0,0,.35), inset 0 0 10px rgba(255,255,255,.38);
-          will-change: transform, border-radius, opacity;
-          transition: transform 650ms cubic-bezier(.2,.8,.2,1), border-radius 520ms ease, opacity 400ms ease;
-        }
-        .cs-blob.gel{ border-radius:999px; }
       `;
       stage.wrap.appendChild(s);
-
-      // SVG goo once
-      if(!document.getElementById('cs-goo-defs')){
-        const svg = document.createElementNS('http://www.w3.org/2000/svg','svg');
-        svg.id = 'cs-goo-defs'; svg.width = 0; svg.height = 0; svg.style.position = 'absolute';
-        svg.innerHTML = `
-          <defs>
-            <filter id="cs-goo">
-              <feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur"/>
-              <feColorMatrix in="blur" mode="matrix"
-                values="1 0 0 0 0
-                        0 1 0 0 0
-                        0 0 1 0 0
-                        0 0 0 22 -10" result="goo"/>
-              <feBlend in="SourceGraphic" in2="goo"/>
-            </filter>
-          </defs>`;
-        stage.wrap.appendChild(svg);
-      }
     }
 
     if(!stage.wiggle){ stage.wiggle = (ms=900)=>{ stage.wrap.classList.add('cs-wiggle'); setTimeout(()=> stage.wrap.classList.remove('cs-wiggle'), ms); }; }
@@ -213,139 +172,11 @@
     if(msg) stage.say(msg);
   }
 
-  // ------------------------------ SLIME MOSAIC ----------------------------------
-  async function slimeMosaic(stage, targetKey){
-    // Anchor to board using offsets (no viewport math → no teleport)
-    const board = stage.board, wrap = stage.wrap;
-    if(!board || !wrap) return;
-    const stageBox = wrap.getBoundingClientRect();
-    const bBox     = board.getBoundingClientRect();
-
-    const layer = document.createElement('div');
-    layer.className = 'cs-slime-layer';
-    layer.style.width  = bBox.width + 'px';
-    layer.style.height = bBox.height+ 'px';
-    layer.style.left   = (bBox.left - stageBox.left) + 'px';
-    layer.style.top    = (bBox.top  - stageBox.top ) + 'px';
-    wrap.appendChild(layer);
-
-    const goo = document.createElement('div');
-    goo.className = 'cs-goo';
-    goo.style.position='absolute';
-    goo.style.inset='0';
-    layer.appendChild(goo);
-
-    const cells = Array.from(board.querySelectorAll('.sd-cell'));
-    if(cells.length===0){ layer.remove(); stage.setVariant?.(targetKey); return; }
-
-    // Build blobs at the same spots; animate via transform only
-    const blobs = [];
-    const cellRects = cells.map(c=> c.getBoundingClientRect());
-    const baseLeft = bBox.left, baseTop = bBox.top;
-
-    cellRects.forEach(r=>{
-      const x = (r.left - baseLeft);
-      const y = (r.top  - baseTop );
-      const w = r.width, h = r.height;
-
-      const b = document.createElement('div');
-      b.className='cs-blob';
-      b.style.width  = w+'px';
-      b.style.height = h+'px';
-      b.style.transform = `translate(${x}px, ${y}px) scale(1)`;
-      goo.appendChild(b);
-      blobs.push(b);
-    });
-
-    // Gel-ify
-    await nextFrame(); blobs.forEach(b=> b.classList.add('gel'));
-
-    // Micro “merge & split” to sell slime
-    const pairs = [];
-    for(let i=0;i<Math.min(10, blobs.length>>1); i++){
-      const a=blobs[randInt(0, blobs.length-1)], b=blobs[randInt(0, blobs.length-1)];
-      if(a!==b) pairs.push([a,b]);
-    }
-    // move toward midpoint (by transforms only)
-    setTimeout(()=>{
-      pairs.forEach(([a,b])=>{
-        const ax = getTx(a), ay = getTy(a);
-        const bx = getTx(b), by = getTy(b);
-        const mx = (ax+bx)/2, my=(ay+by)/2;
-        a.style.transform = `translate(${mx}px, ${my}px) scale(1.02)`;
-        b.style.transform = `translate(${mx}px, ${my}px) scale(1.02)`;
-      });
-    }, 80);
-    // then split slightly
-    setTimeout(()=>{
-      pairs.forEach(([a,b])=>{
-        const ax = getTx(a), ay = getTy(a);
-        a.style.transform = `translate(${ax+randInt(-8,8)}px, ${ay+randInt(-8,8)}px) scale(1.00)`;
-        const bx = getTx(b), by = getTy(b);
-        b.style.transform = `translate(${bx+randInt(-8,8)}px, ${by+randInt(-8,8)}px) scale(1.00)`;
-      });
-    }, 320);
-
-    // Compute target grid positions (keep cell size; re-center within board)
-    const curN = stage.state?.N || Math.sqrt(cells.length)|0 || 9;
-    const targetN = (targetKey==='mini4'?4: (targetKey==='giant16'?16:9));
-    const need = targetN*targetN;
-
-    // add/fade blobs to match count
-    while(blobs.length < need){
-      const seed = blobs[randInt(0, blobs.length-1)];
-      const clone = seed.cloneNode(true);
-      clone.style.opacity='0';
-      goo.appendChild(clone); blobs.push(clone);
-      setTimeout(()=> clone.style.opacity='1', 20);
-    }
-    const surplus = blobs.length - need;
-    if(surplus>0){
-      const off = blobs.splice(need, surplus);
-      off.forEach(b=> setTimeout(()=> b.style.opacity='0', 80));
-    }
-
-    // Based on *current* cell size, reflow to target grid centered in board
-    const w = cells[0].getBoundingClientRect().width;
-    const h = cells[0].getBoundingClientRect().height;
-    const totalW = targetN * w;
-    const totalH = targetN * h;
-    const padX = (bBox.width  - totalW)/2;
-    const padY = (bBox.height - totalH)/2;
-
-    setTimeout(()=>{
-      let i=0;
-      for(let r=0;r<targetN;r++){
-        for(let c=0;c<targetN;c++){
-          const x = Math.round(padX + c*w);
-          const y = Math.round(padY + r*h);
-          const b = blobs[i++]; if(!b) break;
-          b.style.transform = `translate(${x}px, ${y}px) scale(1.00)`;
-        }
-      }
-    }, 520);
-
-    // Finish: switch variant, then remove overlay
-    await wait(1250);
-    try{ stage.setVariant?.(targetKey); }catch{}
-    await wait(350);
-    layer.remove();
-
-    function getTx(el){
-      const m = el.style.transform.match(/translate\(([-0-9.]+)px,\s*([-0-9.]+)px\)/);
-      return m ? parseFloat(m[1]) : 0;
-    }
-    function getTy(el){
-      const m = el.style.transform.match(/translate\(([-0-9.]+)px,\s*([-0-9.]+)px\)/);
-      return m ? parseFloat(m[2]) : 0;
-    }
-    function nextFrame(){ return new Promise(r=> requestAnimationFrame(()=> requestAnimationFrame(r))); }
-  }
-
   // ------------------------------ MINI CHALLENGES -------------------------------
   async function arrowChallenge(stage, target, seconds){
     const N = stage.state.N;
     const start = { r:(target.r+Math.max(1,N>>1))%N, c:(target.c+Math.max(2,N>>1))%N };
+    stage.lockSelectionToCell(start.r, start.c);
     stage.select(start);
     stage.showGuideTarget(target.r, target.c);
 
@@ -360,7 +191,7 @@
       if(sel && sel.r===target.r && sel.c===target.c){ ok=true; break; }
       await wait(40);
     }
-    cd.stop(); stage.hideGuideTarget();
+    cd.stop(); stage.hideGuideTarget(); stage.unlockSelectionLock();
     return ok;
   }
   function startCountdown(stage, seconds){
@@ -451,41 +282,6 @@
     }
   }
 
-  async function placeOneThenUndoRedo(stage){
-    // Lock a specific empty cell, ask to type any digit, then Undo, then Redo
-    const N = stage.state.N;
-    let target = null;
-    for(let r=0;r<N;r++){ for(let c=0;c<N;c++){ if(stage.state.grid[r][c]===0 && !stage.state.given?.[r]?.[c]){ target={r,c}; break; } } if(target) break; }
-    if(!target) return;
-
-    stage.lockSelectionToCell(target.r, target.c);
-    stage.select(target);
-    stage.showGuideTarget(target.r, target.c);
-    stage.say(`Type <b>any digit</b> to place it here.`);
-
-    const before = countFilled(stage);
-    await wait(200);
-    // wait until the target cell is filled
-    await new Promise(res=>{
-      const id = setInterval(()=>{
-        if(stage.state.grid[target.r][target.c]){ clearInterval(id); res(); }
-      }, 60);
-    });
-
-    stage.hideGuideTarget();
-    stage.unlockSelectionLock();
-
-    // Undo
-    await guideTo(stage, stage.controlsMap?.undo, `Now tap <b>Undo</b>.`);
-    await waitForButtonClick(stage, 'undo');
-    await waitForFilledDelta(stage, -999, 1200); // give it a moment to reduce
-    // Redo
-    await guideTo(stage, stage.controlsMap?.redo, `And tap <b>Redo</b> to bring it back.`);
-    await waitForButtonClick(stage, 'redo');
-    // small wait
-    await wait(400);
-  }
-
   // ------------------------------- MAIN TUTORIAL --------------------------------
   async function runTutorial(stage){
     ensureSelectionLockShims(stage);
@@ -522,13 +318,13 @@
     stage.say(`Right-click toggles <b>live candidates</b> for a cell.`);
     await wait(500);
 
-    // Morph boards with *non-destructive* slime
-    stage.say(`Watch the board morph — slime time!`);
-    await slimeMosaic(stage, 'classic9');
+    // Morph boards with the new helper
+    stage.say(`Watch the board morph!`);
+    await stage.runMosaic('classic9');
     await wait(180);
-    await slimeMosaic(stage, 'giant16');
+    await stage.runMosaic('giant16');
     await wait(200);
-    await slimeMosaic(stage, 'classic9');
+    await stage.runMosaic('classic9');
 
     // Generate a proper puzzle using the real "New" flow
     await clickNewWithGuard(stage);
@@ -548,13 +344,10 @@
     // Hint (guaranteed)
     await clickHintAndConfirm(stage);
 
-    // Undo / Redo
-    await placeOneThenUndoRedo(stage);
-
-    // New again — let player observe the rain of digits (game’s own behavior)
+      // New again — start a fresh puzzle
     await guideTo(stage, stage.controlsMap?.new, `Hit <b>New</b> any time to reshuffle.`);
     await waitForButtonClick(stage, 'new');
-    await wait(1200);
+    await wait(200);
 
     // Settings
     await guideTo(stage, stage.controlsMap?.settings, `Help & settings live here — and you can replay me anytime.`);
@@ -572,6 +365,9 @@
       }catch(err){
         console.error('Tutorial crashed:', err);
         try{ stage.say(`Oops — I tripped over my own animation 🤦. Reload and I’ll behave!`); }catch{}
+      } finally {
+        try{ stage.unlockSelectionLock?.(); stage.hideGuideTarget?.(); stage.setLocks?.({ board:false, hotel:false, controls:false }); }catch{}
+        try{ stage.overlay?.remove(); }catch{}
       }
     }
   };
