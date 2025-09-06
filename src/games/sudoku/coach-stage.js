@@ -7,6 +7,16 @@
 // - Tutorial in fullscreen works; strong locks during onboarding; candidates auto-size; countdown panic shakes screen.
 //
 // ---------------------------------------------------------------------------
+let armAudio, enableTone, isArmed;
+
+(async () => {
+  const mod = await import('../../audio/audio-gate.js');
+  armAudio   = mod.armAudio;
+  enableTone = mod.enableTone;
+  isArmed    = mod.isArmed;
+})();
+
+
 
 (function () {
   function makeCoachStage(options = {}) {
@@ -325,6 +335,12 @@
     const board = document.createElement('div'); board.className='sd-board'; board.tabIndex=0; board.setAttribute('role','grid'); board.setAttribute('aria-label','Sudoku board');
     stage.appendChild(board);
 
+    // First user gesture: arm audio but don't start Tone yet
+    board.addEventListener('pointerdown', () => {
+      armAudio();
+    }, { once: true });
+
+
     // Right-click sticky cands (disabled in tutorial)
     board.addEventListener('contextmenu', (e)=>{
       e.preventDefault();
@@ -501,10 +517,32 @@
       }catch{}
     }
 
-    btnMusic.addEventListener('click', ()=>{
+    btnMusic.addEventListener('click', async ()=>{
       if(locks.toolbar) return;
-      musicOn = !musicOn; toggleMusic(musicOn); reflectAudioButtons(); blip(150,.10);
+
+      try {
+        if (!isArmed()) {
+          say(`Tap the board once to arm audio, then hit <b>Music</b>.`);
+          return;
+        }
+        const Tone = await enableTone();   // safe now, runs inside a click handler
+
+        // For now, just keep your old toggleMusic (simple oscillator)
+        musicOn = !musicOn;
+        toggleMusic(musicOn);
+        reflectAudioButtons();
+
+        // Optional: tiny “ping” so you know Tone works
+        const synth = new Tone.Synth().toDestination();
+        synth.triggerAttackRelease('A4', '8n');
+
+        blip(150, .10);
+      } catch (err) {
+        console.warn('Could not start audio:', err);
+        say(`Couldn’t start audio. Try tapping the board first.`);
+      }
     });
+
     btnFullscreen.addEventListener('click', ()=>{ if(locks.toolbar) return; toggleFullscreen(); blip(150,.10); });
 
     btnNew.addEventListener('click', async ()=>{

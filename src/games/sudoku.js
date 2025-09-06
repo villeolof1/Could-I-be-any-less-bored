@@ -16,7 +16,9 @@
 // Depends on: makeHUD(api,{time:true}) and makeConfetti(canvas,opts) from ../kit/gamekit.js
 // Install: npm i tone
 import { makeHUD, makeConfetti, mkAudio as makeTinyAudio } from '../kit/gamekit.js';
-import * as Tone from 'tone';
+import { enableTone } from '../audio/audio-gate.js';
+import lofiMusicUrl from '../../assets/audio/music/lofi-music.mp3';
+
 
 
 
@@ -177,7 +179,26 @@ export default {
     `;
     root.appendChild(css);
 
+    // Unlock audio on the first user gesture
+    const tryUnlockOnce = ()=>{
+      wrap.removeEventListener('pointerdown', tryUnlockOnce, true);
+      wrap.removeEventListener('keydown', tryUnlockOnce, true);
+      wrap.removeEventListener('touchstart', tryUnlockOnce, true);
+
+      // STEP 1: mark audio as armed
+      import('../audio/audio-gate.js').then(mod=>{
+        mod.armAudio();
+        // STEP 2: now safe to actually start Tone
+        ensureAudioReady(true);
+      });
+    };
+
     const wrap = document.createElement('div'); wrap.className='sd-wrap'; root.appendChild(wrap);
+    // Attach unlock listeners right after wrap exists
+    wrap.addEventListener('pointerdown', tryUnlockOnce, true);
+    wrap.addEventListener('keydown', tryUnlockOnce, true);
+    wrap.addEventListener('touchstart', tryUnlockOnce, true);
+
 
     // FX Canvas (confetti)
     const fxCanvas = document.createElement('canvas'); fxCanvas.className='sd-fx';
@@ -262,7 +283,7 @@ export default {
     const tipGrid = document.createElement('div'); tipGrid.className='sd-tipgrid';
     tip.append(tipGrid); board.appendChild(tip);
 
-    const stickyCands = new Map();
+    const stickyCands = new Set();
 
     const hotel = document.createElement('div'); hotel.className='sd-hotel';
     hotel.addEventListener('contextmenu', e=> e.preventDefault());
@@ -340,23 +361,29 @@ export default {
     async function ensureAudioReady(forceResume=false){
       if(audioReady){
         try{
-          if(forceResume && Tone.context?.state!=='running') await Tone.context.resume();
+          if(forceResume){
+            const Tone = await enableTone();
+            if(Tone.context?.state !== 'running') await Tone.context.resume();
+          }
         }catch{}
         return true;
       }
       if(audioInitPromise) return audioInitPromise;
+      
 
       audioInitPromise = (async ()=>{
         try{
-          await Tone.start();
-          if (Tone.context && Tone.context.state !== 'running'){
+          const Tone = await enableTone();
+          if(forceResume && Tone.context?.state !== 'running'){
             try{ await Tone.context.resume(); }catch{}
           }
           if(!tinyFallback) tinyFallback = makeTinyAudio();
-          sfx = makeSfxEngineTone(prefs, save, tinyFallback, () => audioReady, ensureAudioReady);
-          music = makeLofiMusicToneOrMP3_Lazy(prefs, save, () => audioReady, ensureAudioReady, setStatus);
+          sfx = makeSfxEngineTone(Tone, prefs, save, tinyFallback, () => audioReady, ensureAudioReady);
+          music = makeLofiMusicToneOrMP3_Lazy(Tone, prefs, save, () => audioReady, ensureAudioReady, setStatus);
           audioReady = true;
           music.setEnabled(!!prefs.audio.music);
+          console.log("Audio engines ready:", { sfx, music });
+
         }catch(e){
           audioReady = false;
         }finally{
@@ -367,18 +394,9 @@ export default {
       })();
       return audioInitPromise;
     }
-    // Unlock audio on the first user gesture
-    const tryUnlockOnce = ()=>{
-      wrap.removeEventListener('pointerdown', tryUnlockOnce, true);
-      wrap.removeEventListener('keydown', tryUnlockOnce, true);
-      wrap.removeEventListener('touchstart', tryUnlockOnce, true);
-      ensureAudioReady(true);
-    };
-    wrap.addEventListener('pointerdown', tryUnlockOnce, true);
-    wrap.addEventListener('keydown', tryUnlockOnce, true);
-    wrap.addEventListener('touchstart', tryUnlockOnce, true);
 
-    reflectAudioButtons();
+
+
 
     // Variant params
     let N = currentVariant.N, BR=currentVariant.BR, BC=currentVariant.BC, SYMBOLS=currentVariant.symbols;
@@ -1239,10 +1257,11 @@ export default {
       else{
         if(pauseStart){ pausedAcc += performance.now()-pauseStart; pauseStart=null; }
         if (prefs.audio.music && audioReady){
-          try{ await Tone.context.resume(); }catch{}
+          try{ const Tone = await enableTone(); await Tone.context.resume(); }catch{}
         }
       }
     };
+
     document.addEventListener('visibilitychange', onVisibility);
 
     // ------------------------------- Hints ---------------------------------------
@@ -1455,7 +1474,7 @@ export default {
     }
 
     // ----------------------------- Audio via Tone.js -----------------------------
-    function makeSfxEngineTone(prefs, saveFn, tiny, isUnlocked, unlock){
+    function makeSfxEngineTone(Tone, prefs, saveFn, tiny, isUnlocked, unlock){
       const sfxGain = new Tone.Gain(0.6).toDestination();
       const lp = new Tone.Filter(1800, "lowpass").connect(sfxGain);
 
@@ -1517,33 +1536,38 @@ export default {
       return { clickSoft, select, move, place, clear, hint, error, unit, solve, toggle, drag, hover };
     }
 
-    function makeLofiMusicToneOrMP3_Lazy(prefs, saveFn, isUnlocked, unlock, notify){
+    function makeLofiMusicToneOrMP3_Lazy(Tone, prefs, saveFn, isUnlocked, unlock, notify){
       let enabled=false; let player=null; let playerReady=false; let initPromise=null; let fallbackProc=null; let fading=false;
       const musicGain = new Tone.Gain(0.0).toDestination();
       const lp = new Tone.Filter(1300, "lowpass").connect(musicGain);
 
-      function candidateUrls(){
-        const list = [];
-        try{ list.push(new URL('../../assets/audio/music/lofi.mp3', import.meta.url).href); }catch{}
-        list.push('/assets/audio/music/lofi.mp3'); list.push('./assets/audio/music/lofi.mp3'); list.push('assets/audio/music/lofi.mp3');
-        return list;
-      }
+    function candidateUrls(){
+      return [lofiMusicUrl];  // guaranteed to be bundled by Vite
+    }
+
+
 
       async function initPlayerOnce(){
         if (initPromise) return initPromise;
         initPromise = (async ()=>{
           await unlock();
           const urls = candidateUrls();
+          console.log("🎵 Trying music URLs:", urls);
           for (const url of urls){
             try{
+              console.log("Attempting to load:", url);
               player = new Tone.Player({ url, autostart:false, loop:true });
               player.connect(lp);
               await new Promise((res, rej)=>{
-                player.onload = ()=> res(true);
-                player.onerror = (e)=> rej(e || new Error('load failed'));
+                player.onload = ()=> { console.log("Loaded OK:", url); res(true); };
+                player.onerror = (e)=> { console.warn("Load failed:", url, e); rej(e||new Error('load failed')); };
               });
-              playerReady = true; return true;
-            }catch(e){ player = null; playerReady=false; }
+              playerReady = true;
+              return true;
+            }catch(e){
+              console.warn("Music load error:", e);
+              player = null; playerReady=false;
+            }
           }
           fallbackProc = makeProcedural();
           notify?.('Couldn’t load music file — using synth lo-fi.');
@@ -1551,6 +1575,7 @@ export default {
         })();
         return initPromise;
       }
+
 
       function makeProcedural(){
         const padA = new Tone.Oscillator(174.61, "triangle");
