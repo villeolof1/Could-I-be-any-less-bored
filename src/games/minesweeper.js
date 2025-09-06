@@ -200,6 +200,25 @@ Object.assign(board.style,{
 });
 inner.appendChild(board);
 
+// Delegated board input (attach once)
+board.addEventListener('pointerdown', onPointerDown, true);
+board.addEventListener('pointerup', onPointerUp, true);
+board.addEventListener('pointercancel', resetPress, true);
+board.addEventListener('pointerleave', resetPress, true);
+board.addEventListener('contextmenu', e=>{
+  const cell = e.target.closest('.ms-cell');
+  if (!cell || !alive || paused || won) return;
+  e.preventDefault();
+  const x = +cell.dataset.x, y = +cell.dataset.y;
+  pushHistory(); cycleMark(x,y,true); resetPress();
+}, true);
+board.addEventListener('dblclick', e=>{
+  const cell = e.target.closest('.ms-cell');
+  if (!cell || !alive || paused || won || !cfg.chord) return;
+  const x = +cell.dataset.x, y = +cell.dataset.y;
+  if (state[y][x] === 1) chordAt(x,y,true);
+}, true);
+
 // Pause veil
 const veil = document.createElement('div');
 Object.assign(veil.style,{
@@ -487,25 +506,6 @@ function buildBoard(){
       board.appendChild(d);
     }
   }
-
-  // Delegated input
-  board.addEventListener('pointerdown', onPointerDown, true);
-  board.addEventListener('pointerup',   onPointerUp, true);
-  board.addEventListener('pointercancel', resetPress, true);
-  board.addEventListener('pointerleave',  resetPress, true);
-  board.addEventListener('contextmenu', (e)=>{
-    const cell = e.target.closest('.ms-cell');
-    if (!cell || !alive || paused || won) return;
-    e.preventDefault();
-    const x=+cell.dataset.x, y=+cell.dataset.y;
-    pushHistory(); cycleMark(x,y,true); resetPress();
-  }, true);
-  board.addEventListener('dblclick', (e)=>{
-    const cell = e.target.closest('.ms-cell');
-    if (!cell || !alive || paused || won || !cfg.chord) return;
-    const x=+cell.dataset.x, y=+cell.dataset.y;
-    if (state[y][x]===1) chordAt(x,y,true);
-  }, true);
 
   layoutSquare();
   drawAll();
