@@ -16,7 +16,8 @@
 // Depends on: makeHUD(api,{time:true}) and makeConfetti(canvas,opts) from ../kit/gamekit.js
 // Install: npm i tone
 import { makeHUD, makeConfetti, mkAudio as makeTinyAudio } from '../kit/gamekit.js';
-import * as Tone from 'tone';
+import { enableTone } from '../audio/audio-gate.js';
+
 
 
 
@@ -168,17 +169,6 @@ export default {
       .sd-tipbtn:disabled{ opacity:.28; cursor:default; }
       .sd-tipbtn:hover:not(:disabled){ background:rgba(255,255,255,.10); }
 
-      /* audio gate overlay */
-      .sd-audio-gate{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:10000; pointer-events:none; }
-      .sd-audio-gate .sd-audio-btn{
-        pointer-events:auto;
-        padding:10px 14px; border-radius:999px; font-size:13px;
-        background:rgba(0,0,0,.65); color:var(--fg);
-        border:1px solid var(--ring); cursor:pointer;
-        backdrop-filter: blur(3px);
-      }
-      .sd-audio-gate.hidden{ display:none; }
-
       .sd-fx{ position:absolute; inset:0; z-index:var(--fxZ); pointer-events:none; display:block; }
 
       @media (max-width: 420px) {
@@ -188,14 +178,26 @@ export default {
     `;
     root.appendChild(css);
 
-    const wrap = document.createElement('div'); wrap.className='sd-wrap'; root.appendChild(wrap);
+    // Unlock audio on the first user gesture
+    const tryUnlockOnce = ()=>{
+      wrap.removeEventListener('pointerdown', tryUnlockOnce, true);
+      wrap.removeEventListener('keydown', tryUnlockOnce, true);
+      wrap.removeEventListener('touchstart', tryUnlockOnce, true);
 
-    // Audio unlock overlay (non-blocking)
-    const audioGate = document.createElement('div');
-    audioGate.className = 'sd-audio-gate hidden';
-    audioGate.innerHTML = `<button type="button" class="sd-audio-btn">Tap to enable sound</button>`;
-    wrap.appendChild(audioGate);
-    const audioBtn = audioGate.querySelector('.sd-audio-btn');
+      // STEP 1: mark audio as armed
+      import('../audio/audio-gate.js').then(mod=>{
+        mod.armAudio();
+        // STEP 2: now safe to actually start Tone
+        ensureAudioReady(true);
+      });
+    };
+
+    const wrap = document.createElement('div'); wrap.className='sd-wrap'; root.appendChild(wrap);
+    // Attach unlock listeners right after wrap exists
+    wrap.addEventListener('pointerdown', tryUnlockOnce, true);
+    wrap.addEventListener('keydown', tryUnlockOnce, true);
+    wrap.addEventListener('touchstart', tryUnlockOnce, true);
+
 
     // FX Canvas (confetti)
     const fxCanvas = document.createElement('canvas'); fxCanvas.className='sd-fx';
@@ -280,7 +282,7 @@ export default {
     const tipGrid = document.createElement('div'); tipGrid.className='sd-tipgrid';
     tip.append(tipGrid); board.appendChild(tip);
 
-    const stickyCands = new Map();
+    const stickyCands = new Set();
 
     const hotel = document.createElement('div'); hotel.className='sd-hotel';
     hotel.addEventListener('contextmenu', e=> e.preventDefault());
@@ -358,65 +360,42 @@ export default {
     async function ensureAudioReady(forceResume=false){
       if(audioReady){
         try{
-          if(forceResume && Tone.context?.state!=='running') await Tone.context.resume();
+          if(forceResume){
+            const Tone = await enableTone();
+            if(Tone.context?.state !== 'running') await Tone.context.resume();
+          }
         }catch{}
         return true;
       }
       if(audioInitPromise) return audioInitPromise;
+      
 
       audioInitPromise = (async ()=>{
         try{
-          await Tone.start();
-          if (Tone.context && Tone.context.state !== 'running'){
+          const Tone = await enableTone();
+          if(forceResume && Tone.context?.state !== 'running'){
             try{ await Tone.context.resume(); }catch{}
           }
           if(!tinyFallback) tinyFallback = makeTinyAudio();
-          sfx = makeSfxEngineTone(prefs, save, tinyFallback, () => audioReady, ensureAudioReady);
-          music = makeLofiMusicToneOrMP3_Lazy(prefs, save, () => audioReady, ensureAudioReady, setStatus);
+          sfx = makeSfxEngineTone(Tone, prefs, save, tinyFallback, () => audioReady, ensureAudioReady);
+          music = makeLofiMusicToneOrMP3_Lazy(Tone, prefs, save, () => audioReady, ensureAudioReady, setStatus);
           audioReady = true;
           music.setEnabled(!!prefs.audio.music);
+          console.log("Audio engines ready:", { sfx, music });
+
         }catch(e){
           audioReady = false;
         }finally{
           audioInitPromise = null;
           reflectAudioButtons();
-          updateAudioGate();
         }
         return audioReady;
       })();
       return audioInitPromise;
     }
 
-    function updateAudioGate(){
-      try{
-        const suspended = !!Tone.context && Tone.context.state !== 'running';
-        const shouldShow = !audioReady || suspended;
-        audioGate.classList.toggle('hidden', !shouldShow);
-      }catch{
-        audioGate.classList.add('hidden');
-      }
-    }
 
-    // Clicking the pill tries to unlock
-    audioBtn.addEventListener('click', async (e)=>{
-      e.stopPropagation();
-      await ensureAudioReady(true);
-      updateAudioGate();
-    });
 
-    // Unlock on first gesture AND on the audioGate click
-    const tryUnlockOnce = ()=>{
-      wrap.removeEventListener('pointerdown', tryUnlockOnce, true);
-      wrap.removeEventListener('keydown', tryUnlockOnce, true);
-      wrap.removeEventListener('touchstart', tryUnlockOnce, true);
-      ensureAudioReady(true).then(updateAudioGate);
-    };
-    wrap.addEventListener('pointerdown', tryUnlockOnce, true);
-    wrap.addEventListener('keydown', tryUnlockOnce, true);
-    wrap.addEventListener('touchstart', tryUnlockOnce, true);
-
-    reflectAudioButtons();
-    updateAudioGate();
 
     // Variant params
     let N = currentVariant.N, BR=currentVariant.BR, BC=currentVariant.BC, SYMBOLS=currentVariant.symbols;
@@ -1277,10 +1256,11 @@ export default {
       else{
         if(pauseStart){ pausedAcc += performance.now()-pauseStart; pauseStart=null; }
         if (prefs.audio.music && audioReady){
-          try{ await Tone.context.resume(); }catch{}
+          try{ const Tone = await enableTone(); await Tone.context.resume(); }catch{}
         }
       }
     };
+
     document.addEventListener('visibilitychange', onVisibility);
 
     // ------------------------------- Hints ---------------------------------------
@@ -1493,7 +1473,7 @@ export default {
     }
 
     // ----------------------------- Audio via Tone.js -----------------------------
-    function makeSfxEngineTone(prefs, saveFn, tiny, isUnlocked, unlock){
+    function makeSfxEngineTone(Tone, prefs, saveFn, tiny, isUnlocked, unlock){
       const sfxGain = new Tone.Gain(0.6).toDestination();
       const lp = new Tone.Filter(1800, "lowpass").connect(sfxGain);
 
@@ -1555,33 +1535,54 @@ export default {
       return { clickSoft, select, move, place, clear, hint, error, unit, solve, toggle, drag, hover };
     }
 
-    function makeLofiMusicToneOrMP3_Lazy(prefs, saveFn, isUnlocked, unlock, notify){
+    function makeLofiMusicToneOrMP3_Lazy(Tone, prefs, saveFn, isUnlocked, unlock, notify){
       let enabled=false; let player=null; let playerReady=false; let initPromise=null; let fallbackProc=null; let fading=false;
       const musicGain = new Tone.Gain(0.0).toDestination();
       const lp = new Tone.Filter(1300, "lowpass").connect(musicGain);
 
-      function candidateUrls(){
-        const list = [];
-        try{ list.push(new URL('../../assets/audio/music/lofi.mp3', import.meta.url).href); }catch{}
-        list.push('/assets/audio/music/lofi.mp3'); list.push('./assets/audio/music/lofi.mp3'); list.push('assets/audio/music/lofi.mp3');
-        return list;
-      }
+    function candidateUrls(){
+      return ['/assets/audio/music/lofi-music.mp3'];
+    }
+
+
+
+
+
+
 
       async function initPlayerOnce(){
         if (initPromise) return initPromise;
         initPromise = (async ()=>{
           await unlock();
           const urls = candidateUrls();
+          console.log("🎵 Trying music URLs:", urls);
           for (const url of urls){
-            try{
-              player = new Tone.Player({ url, autostart:false, loop:true });
+            try {
+              // create player WITHOUT url so we can attach handlers first
+              player = new Tone.Player({ autostart: false, loop: true });
               player.connect(lp);
-              await new Promise((res, rej)=>{
-                player.onload = ()=> res(true);
-                player.onerror = (e)=> rej(e || new Error('load failed'));
-              });
-              playerReady = true; return true;
-            }catch(e){ player = null; playerReady=false; }
+
+              // attach handlers BEFORE the load begins
+              player.onload  = () => {
+                console.log('🎵 MP3 loaded:', url, 'duration(s)=', player.buffer?.duration);
+              };
+              player.onerror = (e) => {
+                console.error('🎵 MP3 failed to load:', url, e);
+              };
+
+              // now start the load (no race with handler assignment)
+              await player.load(url);
+
+              player.volume.value = -6;
+              playerReady = true;
+              return true;
+            } catch (e) {
+              console.error('🎵 Player init error for', url, e);
+              player = null;
+              playerReady = false;
+            }
+
+
           }
           fallbackProc = makeProcedural();
           notify?.('Couldn’t load music file — using synth lo-fi.');
@@ -1589,6 +1590,7 @@ export default {
         })();
         return initPromise;
       }
+
 
       function makeProcedural(){
         const padA = new Tone.Oscillator(174.61, "triangle");
@@ -1638,6 +1640,15 @@ export default {
           try{ musicGain.gain.cancelAndHoldAtTime(Tone.now()); }catch{}
           if(playerReady && player){ try{ player.start(); }catch{} }
           else{ if(Tone.Transport.state!=='started') Tone.Transport.start(); await fallbackProc.start(); }
+          if(playerReady && player){
+            try { 
+              player.start(); 
+              console.log('🎵 player.start() called; ctx=', Tone.context.state); 
+            } catch {}
+          } else {
+            // fallback path unchanged
+          }
+
           if(!fading){ fading=true; musicGain.gain.linearRampToValueAtTime(0.32, Tone.now()+0.25); setTimeout(()=> fading=false, 300); }
         }else{
           try{ musicGain.gain.cancelAndHoldAtTime(Tone.now()); }catch{}

@@ -379,13 +379,10 @@
     // Hint (guaranteed)
     await clickHintAndConfirm(stage);
 
-    // Undo / Redo
-    await placeOneThenUndoRedo(stage);
-
-    // New again — let player observe the rain of digits (game’s own behavior)
+    // New again — generate a fresh puzzle
     await guideTo(stage, stage.controlsMap?.new, `Hit <b>New</b> any time to reshuffle.`);
     await waitForButtonClick(stage, 'new');
-    await wait(1200);
+    await wait(400);
 
     // Settings
     await guideTo(stage, stage.controlsMap?.settings, `Help & settings live here — and you can replay me anytime.`);
@@ -405,7 +402,7 @@
         try{ stage.say(`Oops — I tripped over my own animation 🤦. Reload and I’ll behave!`); }catch{}
       } finally {
         try{ stage.unlockSelectionLock?.(); stage.hideGuideTarget?.(); stage.setLocks?.({ board:false, hotel:false, controls:false }); }catch{}
-        try{ stage.overlay?.remove(); }catch{}
+        try{ stage.destroy?.(); }catch{}
       }
     }
   };
