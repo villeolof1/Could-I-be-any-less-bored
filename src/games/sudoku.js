@@ -17,7 +17,6 @@
 // Install: npm i tone
 import { makeHUD, makeConfetti, mkAudio as makeTinyAudio } from '../kit/gamekit.js';
 import { enableTone } from '../audio/audio-gate.js';
-import lofiMusicUrl from '../../assets/audio/music/lofi-music.mp3';
 
 
 
@@ -1542,8 +1541,12 @@ export default {
       const lp = new Tone.Filter(1300, "lowpass").connect(musicGain);
 
     function candidateUrls(){
-      return [lofiMusicUrl];  // guaranteed to be bundled by Vite
+      return ['/assets/audio/music/lofi-music.mp3'];
     }
+
+
+
+
 
 
 
@@ -1554,20 +1557,32 @@ export default {
           const urls = candidateUrls();
           console.log("🎵 Trying music URLs:", urls);
           for (const url of urls){
-            try{
-              console.log("Attempting to load:", url);
-              player = new Tone.Player({ url, autostart:false, loop:true });
+            try {
+              // create player WITHOUT url so we can attach handlers first
+              player = new Tone.Player({ autostart: false, loop: true });
               player.connect(lp);
-              await new Promise((res, rej)=>{
-                player.onload = ()=> { console.log("Loaded OK:", url); res(true); };
-                player.onerror = (e)=> { console.warn("Load failed:", url, e); rej(e||new Error('load failed')); };
-              });
+
+              // attach handlers BEFORE the load begins
+              player.onload  = () => {
+                console.log('🎵 MP3 loaded:', url, 'duration(s)=', player.buffer?.duration);
+              };
+              player.onerror = (e) => {
+                console.error('🎵 MP3 failed to load:', url, e);
+              };
+
+              // now start the load (no race with handler assignment)
+              await player.load(url);
+
+              player.volume.value = -6;
               playerReady = true;
               return true;
-            }catch(e){
-              console.warn("Music load error:", e);
-              player = null; playerReady=false;
+            } catch (e) {
+              console.error('🎵 Player init error for', url, e);
+              player = null;
+              playerReady = false;
             }
+
+
           }
           fallbackProc = makeProcedural();
           notify?.('Couldn’t load music file — using synth lo-fi.');
@@ -1625,6 +1640,15 @@ export default {
           try{ musicGain.gain.cancelAndHoldAtTime(Tone.now()); }catch{}
           if(playerReady && player){ try{ player.start(); }catch{} }
           else{ if(Tone.Transport.state!=='started') Tone.Transport.start(); await fallbackProc.start(); }
+          if(playerReady && player){
+            try { 
+              player.start(); 
+              console.log('🎵 player.start() called; ctx=', Tone.context.state); 
+            } catch {}
+          } else {
+            // fallback path unchanged
+          }
+
           if(!fading){ fading=true; musicGain.gain.linearRampToValueAtTime(0.32, Tone.now()+0.25); setTimeout(()=> fading=false, 300); }
         }else{
           try{ musicGain.gain.cancelAndHoldAtTime(Tone.now()); }catch{}
