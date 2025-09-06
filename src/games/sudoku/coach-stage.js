@@ -24,6 +24,16 @@
     root.style.width = '100%';
     root.style.margin = '10px auto 18px';
 
+    const skipBtn = document.createElement('button');
+    skipBtn.className = 'sd-btn coach-skip-btn';
+    skipBtn.textContent = 'Skip tutorial';
+    overlay.appendChild(skipBtn);
+    let stageApi = null;
+    skipBtn.addEventListener('click', ()=>{
+      try{ localStorage.setItem('sudoku:tutorial:skip','1'); }catch{}
+      try{ stageApi?.destroy(); }catch{}
+    });
+
     const css = document.createElement('style');
     css.textContent = `
       @import url('https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap');
@@ -47,6 +57,10 @@
         display:flex; align-items:center; justify-content:center;
         background: rgba(2,4,8,.62);
         backdrop-filter: blur(4px) saturate(1.05);
+      }
+
+      .coach-skip-btn{
+        position:absolute; top:12px; right:12px; z-index:calc(var(--coachZ) + 1);
       }
 
       .panic-flash{ animation: screenFlashRed .18s steps(2) infinite; }
@@ -854,15 +868,15 @@
     async function newPuzzleCinematic(){
       const allNums = board.querySelectorAll('.sd-num');
       allNums.forEach((el,k)=>{
-        el.style.transition='transform 220ms ease, opacity 220ms ease, filter 220ms ease';
+        el.style.transition='transform 160ms ease, opacity 160ms ease, filter 160ms ease';
         const dx=(Math.random()*8-4), dy=(Math.random()*8-4);
         setTimeout(()=>{
           el.style.transform=`translate(${dx}px,${dy}px) scale(1.05)`;
           el.style.filter='blur(1px)';
           el.style.opacity='0';
-        }, k*8);
+        }, k*4);
       });
-      await wait(240);
+      await wait(180);
 
       solution = genSolved();
       grid = empty(N); given = grid.map(r=>r.map(()=>false)); sel=null; draw();
@@ -889,17 +903,19 @@
         if(keep.has(idx)) kept.push(sp);
         else{
           pass.push(sp);
-          const iv=setInterval(()=>{ sp.textContent=valToSym(1+Math.floor(Math.random()*N)); },80);
+          const iv=setInterval(()=>{ sp.textContent=valToSym(1+Math.floor(Math.random()*N)); },60);
           sp.dataset.iv=iv;
         }
       }
 
       await nextFrame();
 
+      const dropMs = 360;
+      const stagger = 24;
       let delay=0;
       kept.forEach(sp=>{
         const r=+sp.dataset.r, c=+sp.dataset.c;
-        sp.style.transition = `top 0.9s cubic-bezier(.2,.9,.2,1) ${delay}ms, opacity 0.9s ${delay}ms`;
+        sp.style.transition = `top ${dropMs}ms cubic-bezier(.2,.9,.2,1) ${delay}ms, opacity ${dropMs}ms ${delay}ms`;
         sp.style.top = (r*cw)+'px';
         sp.style.opacity='1';
         setTimeout(()=>{
@@ -907,20 +923,20 @@
           const rip = document.createElement('div'); rip.className='ripple';
           rip.style.setProperty('--x','50%'); rip.style.setProperty('--y','50%');
           const cell = cellEl(r,c); if(cell){ cell.appendChild(rip); setTimeout(()=> rip.remove(),620); }
-        }, delay+900);
-        delay += 80;
+        }, delay+dropMs);
+        delay += stagger;
       });
 
       pass.forEach(sp=>{
         const r=+sp.dataset.r;
-        sp.style.transition = `top 0.9s cubic-bezier(.2,.9,.2,1), opacity 0.3s ease 0.9s`;
+        sp.style.transition = `top ${dropMs}ms cubic-bezier(.2,.9,.2,1), opacity 120ms ease ${dropMs}ms`;
         sp.style.top = (r*cw)+'px';
         sp.style.opacity='1';
-        setTimeout(()=>{ clearInterval(+sp.dataset.iv); sp.style.opacity='0'; }, 900);
-        setTimeout(()=>{ sp.remove(); }, 1200);
+        setTimeout(()=>{ clearInterval(+sp.dataset.iv); sp.style.opacity='0'; }, dropMs);
+        setTimeout(()=>{ sp.remove(); }, dropMs+140);
       });
 
-      await wait(1200 + delay);
+      await wait(dropMs + delay + 140);
       fall.remove();
       draw();
     }
@@ -1358,7 +1374,7 @@
     function nextFrame(){ return new Promise(r=> requestAnimationFrame(()=> requestAnimationFrame(r))); }
 
     // ---------- Public API ----------
-    return {
+    stageApi = {
       overlay, wrap, board, hotel, controls, controlsMap, topbar, statusEl, pbar, pfill, face, bubble,
       get state(){ return { N, BR, BC, grid: clone(grid), sel, hotelDigit, solution }; },
 
@@ -1454,6 +1470,7 @@
         overlay.remove();
       }
     };
+    return stageApi;
   }
 
   window.makeCoachStage = makeCoachStage;
