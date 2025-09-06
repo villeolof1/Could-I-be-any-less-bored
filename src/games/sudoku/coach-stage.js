@@ -754,9 +754,13 @@
         const cells = [...board.querySelectorAll('.sd-cell')];
         const rects = cells.map(c=> c.getBoundingClientRect());
         const baseL = boardRect.left, baseT = boardRect.top;
+        const targetN = (toKey==='mini4'?4 : (toKey==='giant16'?16:9));
 
         if(rects.length===0){
-          doSetVariant(toKey); draw(); return;
+          doSetVariant(toKey);
+          grid = empty(targetN);
+          given = grid.map(r=> r.map(()=>false));
+          return;
         }
 
         const tiles=[];
@@ -787,7 +791,6 @@
         await nextFrame();
         tiles.forEach(t=> t.style.opacity='0');
 
-        const targetN = (toKey==='mini4'?4 : (toKey==='giant16'?16:9));
         const cw = boardRect.width / targetN;
         const ch = boardRect.height / targetN;
         const totalW = cw*targetN, totalH = ch*targetN;
@@ -835,7 +838,8 @@
 
         await wait(210);
         doSetVariant(toKey);
-        draw();
+        grid = empty(targetN);
+        given = grid.map(r=> r.map(()=>false));
 
         mega.style.opacity='0';
         await wait(160);
@@ -1419,6 +1423,9 @@
       async runMosaic(toKey, { sayLine, sweat } = {}){
         if(sweat) this.setMood('sweat');
         await runMorphCombineMegaSlice(toKey);
+        grid = empty(N);
+        given = grid.map(r=> r.map(()=>false));
+        draw();
         if(sayLine) this.say(sayLine);
         if(sweat) setTimeout(()=> this.setMood(null), 900);
       },
