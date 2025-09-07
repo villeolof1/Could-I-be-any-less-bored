@@ -57,6 +57,21 @@ function pushRecent(id) {
   localStorage.setItem(RECENT_KEY, JSON.stringify([...recents]));
 }
 
+// ===== Hash router (deep link to games) =====
+function openFromHash() {
+  const id = (location.hash || '').slice(1);
+  const game = games.find(g => g.id === id);
+  if (game) {
+    pushRecent(game.id);
+    shell.launch(game);
+  } else {
+    shell.close?.();
+  }
+}
+window.addEventListener('hashchange', openFromHash);
+openFromHash(); // handle initial load with hash
+// ===========================================
+
 function render() {
   const filter = document.querySelector('.tab.active')?.dataset.filter || 'all';
   const term = q.value.trim().toLowerCase();
@@ -90,8 +105,8 @@ function render() {
       </div>
     `;
     card.querySelector('.pill.play').addEventListener('click', () => {
-      pushRecent(g.id);
-      shell.launch(g);
+      // Navigate via hash; openFromHash() will launch and push recents
+      location.hash = g.id;
     });
     card.querySelector('.ghost.pill').addEventListener('click', () => toggleFav(g.id));
     el.appendChild(card);

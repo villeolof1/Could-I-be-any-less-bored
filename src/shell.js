@@ -39,7 +39,7 @@ export function createShell({ overlayEl, galleryEl }) {
     const status = wrap.querySelector('#status');
     const note = wrap.querySelector('#centerNote');
 
-    function setStatus(s) { status.textContent = s; }
+    function setStatus(s) { if (status) status.textContent = s; }
     function setNote(s) { note.textContent = s || ''; note.style.display = s ? 'block' : 'none'; }
     function addHudPill(id, initial='') {
       const el = document.createElement('span');
@@ -60,7 +60,12 @@ export function createShell({ overlayEl, galleryEl }) {
       resume: ctx?.resume || (() => {})
     };
 
-    wrap.querySelector('#backBtn').addEventListener('click', close);
+    wrap.querySelector('#backBtn').addEventListener('click', () => {
+      close();
+      // clear the hash when exiting a game
+      if (location.hash) history.pushState('', document.title, window.location.pathname + window.location.search);
+    });
+
     wrap.querySelector('#pauseBtn').addEventListener('click', () => {
       if (!ctx?.pause) return;
       if (wrap.dataset.paused === '1') {
@@ -75,5 +80,5 @@ export function createShell({ overlayEl, galleryEl }) {
     });
   }
 
-  return { launch };
+  return { launch, close };
 }
