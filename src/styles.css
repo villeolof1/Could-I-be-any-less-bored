@@ -6,7 +6,16 @@
 
   /* Gallery sizing knobs */
   --gallery-gap:16px;
-  --card-min:240px;            /* was ~200px → slightly bigger cards */
+  --card-min:220px;              /* min column size */
+  --card-max:340px;              /* NEW: cap column size so single item doesn't get huge */
+  --card-aspect:1/1;             /* keep cards square */
+}
+
+@media (max-width: 520px){
+  :root{ --card-min:180px; --card-max:280px; }
+}
+@media (min-width: 1200px){
+  :root{ --card-max:360px; }
 }
 
 *{box-sizing:border-box}
@@ -54,30 +63,37 @@ button.ghost{background:transparent;border:1px solid var(--ring)}
 }
 
 /* --- Gallery grid --- */
-/* Use auto-fit so empty columns collapse → no “holes” between rows */
+/* Use auto-fit so empty columns collapse; cap column width to avoid giant singles */
 .gallery{
   display:grid;
-  grid-template-columns:repeat(auto-fit, minmax(var(--card-min), 1fr));
+  grid-template-columns:repeat(auto-fit, minmax(var(--card-min), var(--card-max)));
   gap:var(--gallery-gap);
-  grid-auto-flow:row dense;   /* safe packing; all cards same span */
+  grid-auto-flow:row dense;
+  justify-content:center;   /* center columns when leftover space exists */
+  align-content:start;
 }
 
-/* --- Card: fixed size with strict ratio to avoid stretching --- */
+/* --- Card: fixed ratio; never exceed column width --- */
 .card{
   background:var(--card);border:1px solid var(--ring);border-radius:var(--radius);
   overflow:hidden;box-shadow:var(--shadow);
   display:grid;grid-template-rows:1fr auto;
-  aspect-ratio:1/1;           /* square, consistent height per column width */
-  min-height:0;               /* prevent overflow in grid contexts */
-  transition:transform .15s ease
+  aspect-ratio:var(--card-aspect);
+  min-height:0;
+  transition:transform .15s ease, box-shadow .15s ease, border-color .15s ease;
+  will-change:transform;
 }
-.card:hover{transform:translateY(-2px)}
+.card:hover{
+  transform:translateY(-2px);
+  box-shadow:0 10px 28px rgba(0,0,0,.42);
+  border-color:rgba(255,255,255,.09);
+}
 
 /* Thumb fills the flexible area */
 .thumb{
   width:100%;height:100%;display:grid;place-items:center;
   background:linear-gradient(180deg,#1d2331,#141824);
-  font-size:44px;             /* slightly bigger to match larger cards */
+  font-size:clamp(28px, 6.2vw, 44px);
   user-select:none
 }
 
@@ -86,7 +102,8 @@ button.ghost{background:transparent;border:1px solid var(--ring)}
   display:flex;flex-direction:column;gap:8px;padding:12px;border-top:1px solid var(--ring)
 }
 .meta .title{
-  font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+  font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-size:clamp(13px, 2.2vw, 15px);
 }
 .meta .row{
   display:flex;justify-content:space-between;align-items:center;color:var(--muted)
@@ -123,32 +140,15 @@ a{color:var(--brand)}
 
 /* Dark-only: no .light overrides */
 
-
 /* Empty-state card shown when Favorites has no items */
-.empty {
-  display:grid;
-  place-items:center;
-  padding:24px;
-}
+.empty { display:grid; place-items:center; padding:24px; }
 .empty-card{
-  max-width:640px;
-  width:100%;
-  padding:18px 16px;
-  border-radius:var(--radius);
-  background:var(--card);
-  border:1px solid var(--ring);
-  text-align:center;
-  box-shadow:var(--shadow);
+  max-width:640px; width:100%; padding:18px 16px;
+  border-radius:var(--radius); background:var(--card);
+  border:1px solid var(--ring); text-align:center; box-shadow:var(--shadow);
 }
-.empty-title{
-  font-weight:700;
-  font-size:16px;
-  margin-bottom:6px;
-}
-.empty-text{
-  color:var(--muted);
-  margin:0;
-}
+.empty-title{ font-weight:700; font-size:16px; margin-bottom:6px; }
+.empty-text{ color:var(--muted); margin:0; }
 .empty .star{font-weight:700}
 
 /* Rating widget: clearer visuals */
@@ -158,9 +158,7 @@ a{color:var(--brand)}
   padding:4px 8px; border-radius:999px;
   border:1px solid var(--ring); background:#0f1524;
 }
-.rating-label {
-  font-size:12px; color:var(--muted); margin-right:2px;
-}
+.rating-label { font-size:12px; color:var(--muted); margin-right:2px; }
 .rating .star {
   appearance:none; border:1px solid transparent; background:transparent;
   color:#7b8091; opacity:0.9; font-size:20px; line-height:1;
@@ -174,13 +172,8 @@ a{color:var(--brand)}
   background:#121a2d;
   outline:none;
 }
-.rating .star.on {
-  color:#ffd476;
-  text-shadow:0 0 8px rgba(255,212,118,.25);
-}
-.rating-value {
-  font-size:12px; color:var(--muted); margin-left:4px; min-width:28px; text-align:right;
-}
+.rating .star.on { color:#ffd476; text-shadow:0 0 8px rgba(255,212,118,.25); }
+.rating-value { font-size:12px; color:var(--muted); margin-left:4px; min-width:28px; text-align:right; }
 
 /* Toasts (bottom-center) */
 .toast-wrap {
@@ -195,3 +188,37 @@ a{color:var(--brand)}
   pointer-events:auto;
 }
 .toast.show { opacity:1; transform:translateY(0); }
+
+/* Smooth card transitions (FLIP + enter/exit) */
+.card { transition: transform 220ms ease, opacity 180ms ease; }
+.card.enter { opacity: 0; transform: scale(.96); }
+.card.enter.enter-play { opacity: 1; transform: none; }
+
+/* Exit: element becomes absolute and fades/shrinks (JS sets positioning) */
+.card.leaving {
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(.96);
+  transition: transform 200ms ease, opacity 180ms ease;
+}
+
+/* Subtle glow while a query is active */
+#search.searching {
+  box-shadow: 0 0 0 2px rgba(122,166,255,.20), inset 0 0 18px rgba(122,166,255,.15);
+  border-color: rgba(122,166,255,.32);
+}
+
+/* Motion safety */
+@media (prefers-reduced-motion: reduce) {
+  .card { transition: none !important; }
+  .card.enter, .card.enter.enter-play, .card.leaving { transform: none !important; }
+  #search.searching { box-shadow: none !important; }
+}
+
+
+
+/* Motion safety */
+@media (prefers-reduced-motion: reduce) {
+  .card, .rating .star, .toast { transition:none !important; }
+}
+
