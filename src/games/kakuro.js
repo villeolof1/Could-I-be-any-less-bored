@@ -185,7 +185,15 @@ function buildModel(seed) {
     for (let c=0;c<W;c++){
       const cell=grid[r][c];
       if (cell.b) row.push({ b:true, a:cell.a||0, d:cell.d||0 });
-      else row.push({ b:false, value:0, notes:new Set(), runAcross:runIdAt[r][c].a, runDown:runIdAt[r][c].d });
+      else row.push({
+        b:false,
+        value:0,
+        notes:new Set(), // union of userNotes + autoNotes (kept for render convenience)
+        userNotes:new Set(),
+        autoNotes:new Set(),
+        runAcross:runIdAt[r][c].a,
+        runDown:runIdAt[r][c].d
+      });
     }
     state.push(row);
   }
@@ -269,7 +277,15 @@ function cloneModel(model) {
     for (let c=0;c<m.W;c++){
       const s=model.state[r][c];
       if (s.b) row.push({ b:true, a:s.a||0, d:s.d||0 });
-      else row.push({ b:false, value:s.value, notes:new Set(), runAcross:s.runAcross, runDown:s.runDown });
+      else row.push({
+        b:false,
+        value:s.value,
+        notes:new Set(),
+        userNotes:new Set(),
+        autoNotes:new Set(),
+        runAcross:s.runAcross,
+        runDown:s.runDown
+      });
     }
     m.state.push(row);
   }
@@ -898,7 +914,12 @@ function createGame(seed, seedKey, meta) {
   if (saved && saved.grid && saved.grid.length===model.H){
     for (let r=0;r<model.H;r++) for (let c=0;c<model.W;c++){
       const s = saved.grid[r][c], cell=model.state[r][c];
-      if (!cell.b && s){ cell.value=s.v||0; cell.notes=new Set(s.n||[]); }
+      if (!cell.b && s){
+        cell.value=s.v||0;
+        cell.userNotes=new Set(s.u || s.n || []);
+        cell.autoNotes=new Set(s.a || []);
+        syncNotes(cell);
+      }
     }
     elapsed=saved.elapsed||0; mistakes=saved.mistakes||0;
     notesMode=!!saved.notesMode;
@@ -913,16 +934,48 @@ function createGame(seed, seedKey, meta) {
     if (saved.solution && Array.isArray(saved.solution)) meta.solution = saved.solution;
   }
 
+  // Ensure auto-notes state is consistent after load
+  if (autoNotes) refreshAutoNotesAll(); else clearAutoNotesAll();
+
   let needsSave=false, saveTimer=null;
   function scheduleSave(){ needsSave=true; if (saveTimer) return; saveTimer=setTimeout(()=>{ if (needsSave) doSave(); needsSave=false; saveTimer=null; }, AUTOSAVE_MS); }
+  // Keep cell.notes in sync as a union of user + auto generated notes (rendering helper only)
+  function syncNotes(cell){ cell.notes = new Set([...(cell.userNotes||[]), ...(cell.autoNotes||[])]); }
+
   function doSave(){
-    const grid=[]; for (let r=0;r<model.H;r++){ const row=[]; for (let c=0;c<model.W;c++){ const cell=model.state[r][c]; row.push(cell.b?null:{ v:cell.value, n:[...cell.notes] }); } grid.push(row); }
+    const grid=[]; for (let r=0;r<model.H;r++){ const row=[]; for (let c=0;c<model.W;c++){ const cell=model.state[r][c]; row.push(cell.b?null:{ v:cell.value, u:[...cell.userNotes], a:[...cell.autoNotes] }); } grid.push(row); }
     storage.set(saveKey, {
       grid, elapsed:getElapsed(), mistakes,
       notesMode, softErrors, autoAdvance, highContrast, reducedMotion,
       strictMode, autoNotes, soundOn, hintsUsed,
       solution: meta.solution || null
     });
+  }
+
+  function confirmClearAllNotes(){
+    const panel=document.createElement('div');
+    panel.className='modal-backdrop';
+    panel.style.cssText='position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:2000;';
+    panel.innerHTML=`
+      <div role="dialog" style="background:var(--card,#171a21);border:1px solid rgba(255,255,255,.12);color:var(--ink,#e9ecf1);border-radius:14px;padding:14px;width:min(420px,92vw);text-align:center">
+        <div style="margin-bottom:10px">Clear every note on the board? Values stay untouched.</div>
+        <div style="display:flex;gap:8px;justify-content:center">
+          <button class="btn small" data-act="yes">Clear notes</button>
+          <button class="btn small" data-act="no">Cancel</button>
+        </div>
+      </div>`;
+    root.querySelector('.kakuro-wrap').appendChild(panel);
+    const off=on(panel,'click',(e)=>{
+      const a=e.target.getAttribute('data-act');
+      if (a==='yes'){
+        game.clearAllNotes();
+        needsPaint=true; updateKeypadCandidates(); updateGuideLabels();
+        announce('All notes cleared');
+        panel.remove(); off();
+      }
+      if (a==='no'){ panel.remove(); off(); }
+    });
+    on(window,'keydown',(e)=>{ if (e.key==='Escape'){ panel.remove(); off(); } }, { once:true, capture:true });
   }
 
   function getElapsed(){ return running ? (elapsed + (now()-startedAt)) : elapsed; }
@@ -932,17 +985,44 @@ function createGame(seed, seedKey, meta) {
 
   function pushHistory(op){ history.push(op); redoStack.length=0; }
 
+  // Recompute auto-notes for a single cell (preserves user notes)
+  function refreshAutoNotesForCell(r, c){
+    if (!autoNotes) return;
+    const cell = model.state[r][c];
+    if (cell.b) return;
+    if (cell.value === 0) cell.autoNotes = new Set(cellCandidates(model, r, c));
+    else cell.autoNotes.clear();
+    syncNotes(cell);
+  }
+
+  // Generate auto-notes for all empty cells (no-op if auto-notes is off)
   function refreshAutoNotesAll(){
     if (!autoNotes) return;
     for (let r = 0; r < model.H; r++) {
       for (let c = 0; c < model.W; c++) {
         const cell = model.state[r][c];
         if (cell.b) continue;
-        if (cell.value === 0) cell.notes = new Set(cellCandidates(model, r, c));
-        else cell.notes.clear();
+        if (cell.value === 0) cell.autoNotes = new Set(cellCandidates(model, r, c));
+        else cell.autoNotes.clear();
+        syncNotes(cell);
       }
     }
   }
+
+  // Remove all auto-generated notes without touching user notes
+  function clearAutoNotesAll(){
+    for (let r = 0; r < model.H; r++) {
+      for (let c = 0; c < model.W; c++) {
+        const cell = model.state[r][c];
+        if (cell.b) continue;
+        cell.autoNotes.clear();
+        syncNotes(cell);
+      }
+    }
+  }
+
+  // History/save helper snapshot
+  const snapshotCell = (cell) => ({ v:cell.value, u:[...cell.userNotes], a:[...cell.autoNotes] });
 
   function applyPlace(r,c,v, record=true, announceCb=null) {
     const cell = model.state[r][c]; if (cell.b) return;
@@ -963,8 +1043,8 @@ function createGame(seed, seedKey, meta) {
       }
     }
 
-    const prev = { v:cell.value, n:[...cell.notes] };
-    if (record) pushHistory({ type:'place', r, c, before:prev, after:{ v, n:[] } });
+    const prev = snapshotCell(cell);
+    if (record) pushHistory({ type:'place', r, c, before:prev, after:{ v, u:[], a:[] } });
 
     if (v===0){
       cell.value=0;
@@ -972,7 +1052,9 @@ function createGame(seed, seedKey, meta) {
       sfx.clear();
     } else {
       cell.value=v;
-      cell.notes.clear();
+      cell.userNotes.clear();
+      cell.autoNotes.clear();
+      syncNotes(cell);
       sfx.place();
     }
 
@@ -985,10 +1067,12 @@ function createGame(seed, seedKey, meta) {
 
   function clearCell(r,c, record=true) {
     const cell=model.state[r][c]; if (cell.b) return;
-    const prev={ v:cell.value, n:[...cell.notes] };
-    if (record) pushHistory({ type:'clear', r,c, before:prev, after:{ v:0, n:[] } });
+    const prev=snapshotCell(cell);
+    if (record) pushHistory({ type:'clear', r,c, before:prev, after:{ v:0, u:[], a:[] } });
     cell.value=0;
-    cell.notes.clear();
+    cell.userNotes.clear();
+    cell.autoNotes.clear();
+    syncNotes(cell);
     sfx.clear();
     refreshAutoNotesAll();
     scheduleSave();
@@ -996,9 +1080,32 @@ function createGame(seed, seedKey, meta) {
 
   function applyToggleNote(r,c,v, record=true){
     const cell=model.state[r][c]; if (cell.b||cell.value||autoNotes) return;
-    const had = cell.notes.has(v);
+    const had = cell.userNotes.has(v);
     if (record) pushHistory({ type:'note', r,c,digit:v,before:had });
-    if (had) cell.notes.delete(v); else cell.notes.add(v);
+    if (had) cell.userNotes.delete(v); else cell.userNotes.add(v);
+    syncNotes(cell);
+    scheduleSave();
+  }
+
+  // Clear notes for a single cell (optionally keeping auto-generated notes intact)
+  function clearNotesAt(r,c,{ includeAuto=true, record=true }={}){
+    const cell=model.state[r][c]; if (cell.b) return;
+    const prev = snapshotCell(cell);
+    cell.userNotes.clear();
+    if (includeAuto) cell.autoNotes.clear();
+    syncNotes(cell);
+    if (autoNotes) refreshAutoNotesForCell(r,c);
+    if (record) pushHistory({ type:'notesClear', r, c, before:prev, after:snapshotCell(cell) });
+    scheduleSave();
+  }
+
+  // Clear every note on the board (values untouched)
+  function clearAllNotes(){
+    for (let r=0;r<model.H;r++) for (let c=0;c<model.W;c++){
+      const cell=model.state[r][c]; if (cell.b) continue;
+      cell.userNotes.clear(); cell.autoNotes.clear(); syncNotes(cell);
+    }
+    if (autoNotes) refreshAutoNotesAll();
     scheduleSave();
   }
 
@@ -1006,12 +1113,16 @@ function createGame(seed, seedKey, meta) {
     const op=history.pop(); if (!op) return;
     const cell=model.state[op.r][op.c];
     if (op.type==='place'||op.type==='clear'){
-      const cur={ v:cell.value, n:[...cell.notes] };
-      cell.value=op.before.v; cell.notes=new Set(op.before.n);
+      const cur=snapshotCell(cell);
+      cell.value=op.before.v; cell.userNotes=new Set(op.before.u||[]); cell.autoNotes=new Set(op.before.a||[]); syncNotes(cell);
       redoStack.push({ ...op, redoFrom:cur });
     } else if (op.type==='note'){
-      if (op.before) cell.notes.add(op.digit); else cell.notes.delete(op.digit);
+      if (op.before) cell.userNotes.add(op.digit); else cell.userNotes.delete(op.digit); syncNotes(cell);
       redoStack.push(op);
+    } else if (op.type==='notesClear'){
+      const cur=snapshotCell(cell);
+      cell.value=op.before.v; cell.userNotes=new Set(op.before.u||[]); cell.autoNotes=new Set(op.before.a||[]); syncNotes(cell);
+      redoStack.push({ ...op, redoFrom:cur });
     }
     refreshAutoNotesAll(); scheduleSave();
   }
@@ -1019,9 +1130,11 @@ function createGame(seed, seedKey, meta) {
     const op=redoStack.pop(); if (!op) return;
     const cell=model.state[op.r][op.c];
     if (op.type==='place'||op.type==='clear'){
-      cell.value=op.after.v; cell.notes=new Set(op.after.n); history.push(op);
+      cell.value=op.after.v; cell.userNotes=new Set(op.after.u||[]); cell.autoNotes=new Set(op.after.a||[]); syncNotes(cell); history.push(op);
     } else if (op.type==='note'){
-      if (op.before) cell.notes.delete(op.digit); else cell.notes.add(op.digit); history.push(op);
+      if (op.before) cell.userNotes.delete(op.digit); else cell.userNotes.add(op.digit); syncNotes(cell); history.push(op);
+    } else if (op.type==='notesClear'){
+      cell.value=op.after.v; cell.userNotes=new Set(op.after.u||[]); cell.autoNotes=new Set(op.after.a||[]); syncNotes(cell); history.push(op);
     }
     refreshAutoNotesAll(); scheduleSave();
   }
@@ -1092,7 +1205,7 @@ function createGame(seed, seedKey, meta) {
   return {
     model,
     getElapsed, pauseTimer, resumeTimer, resetTimer,
-    applyPlace, applyToggleNote, clearCell, undo, redo,
+    applyPlace, applyToggleNote, clearCell, clearNotesAt, clearAllNotes, undo, redo,
     moveCursor, nextInRun,
     cellCandidates: (r,c)=>cellCandidates(model,r,c),
     cellIllegal: (r,c)=>cellIllegal(model,r,c),
@@ -1115,7 +1228,12 @@ function createGame(seed, seedKey, meta) {
     get highContrast(){return highContrast;}, set highContrast(v){highContrast=v; scheduleSave();},
     get reducedMotion(){return reducedMotion;}, set reducedMotion(v){reducedMotion=v; scheduleSave();},
     get strictMode(){return strictMode;}, set strictMode(v){strictMode=v; scheduleSave();},
-    get autoNotes(){return autoNotes;}, set autoNotes(v){autoNotes=v; if (v) refreshAutoNotesAll(); scheduleSave();},
+    get autoNotes(){return autoNotes;}, set autoNotes(v){
+      const next=!!v; if (autoNotes===next) return;
+      autoNotes=next;
+      if (autoNotes) refreshAutoNotesAll(); else clearAutoNotesAll();
+      scheduleSave();
+    },
 
     get mistakes(){return mistakes;}, addMistake(){mistakes++; scheduleSave();},
     blink(){ lastBlinkAt=now(); }, shake(){ lastShakeAt=now(); },
@@ -1274,6 +1392,8 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
   const clueLabel = root.querySelector('#clueLabel');
   const candLabel = root.querySelector('#candLabel');
   const modeLabel = root.querySelector('#modeLabel');
+  let hintHighlight = null; // transient highlight when a hint reveals a digit
+  let hasCelebrated = game.isSolved(); // prevent repeat confetti after solve
 
   // Mode label
   const isDaily = !!game.meta.daily;
@@ -1287,10 +1407,21 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
   const showSnack = (msg, ms=1500)=>{ if (!msg) return; snack.textContent=msg; snack.classList.add('show'); setTimeout(()=>snack.classList.remove('show'), ms); };
   const announce = msg => (live.textContent = msg || '');
 
+  function celebrateIfSolved(){
+    if (hasCelebrated) return;
+    if (!game.isSolved()) return;
+    hasCelebrated = true;
+    game.pauseTimer();
+    confetti.burst?.({ count: 320 });
+    sfx.fanfare?.();
+    showSnack('Solved! 🎉');
+  }
+
   // keypad
   function buildKeypadHtml(){
     const keys=[]; for (let d=1; d<=9; d++) keys.push({t:String(d),act:`digit:${d}`});
     keys.push({ t:'Clear', act:'clear', cls:'zero' });
+    keys.push({ t:'Clear Notes', act:'clearNotes', cls:'notes' });
     keys.push({ t:'Notes ✏️', act:'toggleNotes', cls:'notes' });
     return keys.map(k=>`<div class="k ${k.cls||''}" data-act="${k.act}">${k.t}</div>`).join('');
   }
@@ -1301,6 +1432,7 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
     const k = e.target.closest('.k'); if (!k) return;
     const act=k.getAttribute('data-act');
     if (act==='clear') { clearCurrentCell(); return; }
+    if (act==='clearNotes') { clearCurrentNotes(); return; }
     if (act==='toggleNotes') { toggleNotes(); return; }
     if (act.startsWith('digit:')) onDigit(parseInt(act.split(':')[1],10));
   }
@@ -1552,7 +1684,7 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
           ctx.save(); ctx.globalAlpha=blinkAlpha*0.25; ctx.fillStyle=warn;
           roundRect(ctx,x+2,y+2,cellSize-4,cellSize-4,Math.min(6, cellSize*0.15)); ctx.fill(); ctx.restore();
         }
-      } else if (s.notes.size>0){
+      } else if (s.notes.size>0 && !game.peekActive){
         ctx.fillStyle='rgba(255,255,255,.65)';
         ctx.font=`${Math.floor(cellSize*0.18)}px ui-sans-serif,system-ui`; ctx.textAlign='center'; ctx.textBaseline='middle';
         [...s.notes].sort((a,b)=>a-b).forEach(d=>{
@@ -1577,6 +1709,30 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
     // selection border
     { const x=cur.c*cellSize, y=cur.r*cellSize; ctx.lineWidth=Math.max(2,Math.floor(cellSize*0.06)); ctx.strokeStyle=brand; roundRectStroke(ctx,x+2,y+2,cellSize-4,cellSize-4, Math.min(6, cellSize*0.15)); }
 
+    // hint glow (fades in/out, always above selection)
+    if (hintHighlight){
+      const t = now()-hintHighlight.started;
+      const duration = 1500;
+      if (t>duration){
+        hintHighlight=null;
+      } else {
+        const fadeIn = Math.min(1, t/200);
+        const fadeOut = t>duration-240 ? Math.max(0,(duration-t)/240) : 1;
+        const alpha = clamp(fadeIn*fadeOut, 0, 1);
+        const pulse = 0.65 + 0.35*Math.sin((t/duration)*Math.PI);
+        const hx = hintHighlight.c*cellSize, hy = hintHighlight.r*cellSize;
+        ctx.save();
+        ctx.globalAlpha = 0.25 * alpha * pulse;
+        ctx.fillStyle = brand;
+        roundRect(ctx,hx+2,hy+2,cellSize-4,cellSize-4, Math.min(6, cellSize*0.15)); ctx.fill();
+        ctx.globalAlpha = 0.9 * alpha;
+        ctx.lineWidth = Math.max(2,Math.floor(cellSize*0.08));
+        ctx.strokeStyle = brand;
+        roundRectStroke(ctx,hx+2,hy+2,cellSize-4,cellSize-4, Math.min(6, cellSize*0.15));
+        ctx.restore();
+      }
+    }
+
     const sinceShake = now()-game.lastShakeAt;
     if (sinceShake<220 && !game.reducedMotion){
       const t=sinceShake/220;
@@ -1590,6 +1746,8 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
     if (strictErr && (now()-strictErr.at)>=260){
       game.clearStrictError();
     }
+
+    celebrateIfSolved();
   }
 
   function roundRect(ctx,x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
@@ -1623,6 +1781,17 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
     updateGuideLabels();
   }
 
+  function clearCurrentNotes(){
+    const { r, c } = game.cursor;
+    const s = game.model.state[r][c];
+    if (s.b) return;
+    game.clearNotesAt(r,c,{ includeAuto:!game.autoNotes });
+    needsPaint = true;
+    updateKeypadCandidates();
+    updateGuideLabels();
+    announce('Notes cleared');
+  }
+
   function onDigit(d){
     const { r,c } = game.cursor; const s=game.model.state[r][c]; if (s.b) return;
 
@@ -1640,13 +1809,7 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
 
     if (game.autoNotes) game.refreshAutoNotesAll();
 
-    // no auto-move after digit; stay on cell
-    if (game.isSolved()){
-      game.pauseTimer();
-      confetti.burst?.({ count: 260 });
-      sfx.fanfare?.();
-      showSnack('Solved! 🎉');
-    }
+    celebrateIfSolved();
     needsPaint=true; updateKeypadCandidates(); updateGuideLabels();
   }
 
@@ -1774,11 +1937,14 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
       const a=e.target.getAttribute('data-act');
       if (a==='yes'){
         for (let r=0;r<game.model.H;r++) for (let c=0;c<game.model.W;c++){
-          const s=game.model.state[r][c]; if (!s.b){ s.value=0; s.notes.clear(); }
+          const s=game.model.state[r][c]; if (!s.b){ s.value=0; s.userNotes.clear(); s.autoNotes.clear(); syncNotes(s); }
         }
         game.resetTimer(true);
         showSnack('Restarted');
         game.refreshAutoNotesAll();
+        hasCelebrated = false;
+        hintHighlight = null;
+        scheduleSave();
         needsPaint=true; updateKeypadCandidates(); updateGuideLabels();
         panel.remove(); off();
       }
@@ -1864,6 +2030,10 @@ Mistakes: ${game.mistakes}`;
         <label style="display:flex;gap:8px;align-items:center;margin:6px 0">
           <input type="checkbox" ${game.reducedMotion?'checked':''} data-key="rm"> Reduced motion
         </label>
+        <div style="margin:10px 0 4px;opacity:.8;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+          <span>Notes</span>
+          <button class="btn small" data-act="clear-notes-all">Clear all notes…</button>
+        </div>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
           <button class="btn small" data-act="close">Close</button>
         </div>
@@ -1873,7 +2043,7 @@ Mistakes: ${game.mistakes}`;
       const chk=e.target.closest('input[type="checkbox"]');
       if (chk){
         const key=chk.getAttribute('data-key');
-        if (key==='autoNotes'){ game.autoNotes=chk.checked; if (chk.checked) game.refreshAutoNotesAll(); }
+        if (key==='autoNotes'){ game.autoNotes=chk.checked; showSnack(`Auto-notes ${chk.checked?'ON':'OFF'}`); }
         if (key==='soft') game.softErrors=chk.checked;
         if (key==='strict'){
           if (chk.checked) {
@@ -1890,6 +2060,8 @@ Mistakes: ${game.mistakes}`;
         if (key==='rm') game.reducedMotion=chk.checked;
         needsPaint=true; updateKeypadCandidates();
       }
+      const clearAll=e.target.closest('[data-act="clear-notes-all"]');
+      if (clearAll){ confirmClearAllNotes(); }
       const b=e.target.closest('[data-act="close"]'); if (b){ off(); panel.remove(); }
     });
     on(window,'keydown',(e)=>{ if (e.key==='Escape'){ off(); panel.remove(); } }, { once:true, capture:true });
@@ -1901,6 +2073,8 @@ Mistakes: ${game.mistakes}`;
     needsPaint = true;
     updateKeypadCandidates();
     updateGuideLabels();
+    hintHighlight = { r:res.r, c:res.c, started: now() };
+    celebrateIfSolved();
   }
 
   function closeAnyModal(){ root.querySelectorAll('.modal-backdrop').forEach(n=>n.remove()); }
