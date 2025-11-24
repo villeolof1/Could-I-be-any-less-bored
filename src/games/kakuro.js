@@ -1,3 +1,5 @@
+import { fitCanvas as fitCanvasShared, makeConfetti as makeConfettiShared } from '../kit/gamekit.js';
+
 // src/games/kakuro.js — Dream Kakuro+ (final-ux-3, single-daily, smarter-nav)
 // ------------------------------------------------------------------
 // Final UX + reliability:
@@ -40,8 +42,8 @@ function fitCanvasFallback(canvas, width, height) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return { dpr, ctx };
 }
-const fitCanvas = kit.fitCanvas || fitCanvasFallback;
-const confetti = kit.confetti || { burst: () => {} };
+const fitCanvas = kit.fitCanvas || fitCanvasShared || fitCanvasFallback;
+const makeConfetti = (typeof kit.confetti === 'function' ? kit.confetti : makeConfettiShared) || null;
 
 let soundOn = true;
 const _sfx = (kit.audio && kit.audio.sfx) || { select(){}, place(){}, clear(){}, errorSoft(){}, fanfare(){} };
@@ -185,7 +187,7 @@ function buildModel(seed) {
     for (let c=0;c<W;c++){
       const cell=grid[r][c];
       if (cell.b) row.push({ b:true, a:cell.a||0, d:cell.d||0 });
-      else row.push({ b:false, value:0, notes:new Set(), runAcross:runIdAt[r][c].a, runDown:runIdAt[r][c].d });
+      else row.push({ b:false, value:0, notes:new Set(), autoNotes:new Set(), runAcross:runIdAt[r][c].a, runDown:runIdAt[r][c].d });
     }
     state.push(row);
   }
@@ -898,7 +900,7 @@ function createGame(seed, seedKey, meta) {
   if (saved && saved.grid && saved.grid.length===model.H){
     for (let r=0;r<model.H;r++) for (let c=0;c<model.W;c++){
       const s = saved.grid[r][c], cell=model.state[r][c];
-      if (!cell.b && s){ cell.value=s.v||0; cell.notes=new Set(s.n||[]); }
+      if (!cell.b && s){ cell.value=s.v||0; cell.notes=new Set(s.n||[]); cell.autoNotes=new Set(); }
     }
     elapsed=saved.elapsed||0; mistakes=saved.mistakes||0;
     notesMode=!!saved.notesMode;
@@ -912,6 +914,8 @@ function createGame(seed, seedKey, meta) {
     Object.assign(hintsUsed, saved.hintsUsed||{});
     if (saved.solution && Array.isArray(saved.solution)) meta.solution = saved.solution;
   }
+
+  if (autoNotes) refreshAutoNotesAll();
 
   let needsSave=false, saveTimer=null;
   function scheduleSave(){ needsSave=true; if (saveTimer) return; saveTimer=setTimeout(()=>{ if (needsSave) doSave(); needsSave=false; saveTimer=null; }, AUTOSAVE_MS); }
@@ -932,14 +936,24 @@ function createGame(seed, seedKey, meta) {
 
   function pushHistory(op){ history.push(op); redoStack.length=0; }
 
+  function clearAutoNotesAll(){
+    for (let r = 0; r < model.H; r++) {
+      for (let c = 0; c < model.W; c++) {
+        const cell = model.state[r][c];
+        if (cell.b) continue;
+        cell.autoNotes?.clear?.();
+      }
+    }
+  }
+
   function refreshAutoNotesAll(){
     if (!autoNotes) return;
     for (let r = 0; r < model.H; r++) {
       for (let c = 0; c < model.W; c++) {
         const cell = model.state[r][c];
         if (cell.b) continue;
-        if (cell.value === 0) cell.notes = new Set(cellCandidates(model, r, c));
-        else cell.notes.clear();
+        if (cell.value === 0) cell.autoNotes = new Set(cellCandidates(model, r, c));
+        else cell.autoNotes.clear();
       }
     }
   }
@@ -973,6 +987,7 @@ function createGame(seed, seedKey, meta) {
     } else {
       cell.value=v;
       cell.notes.clear();
+      cell.autoNotes.clear();
       sfx.place();
     }
 
@@ -989,7 +1004,36 @@ function createGame(seed, seedKey, meta) {
     if (record) pushHistory({ type:'clear', r,c, before:prev, after:{ v:0, n:[] } });
     cell.value=0;
     cell.notes.clear();
+    cell.autoNotes.clear();
     sfx.clear();
+    refreshAutoNotesAll();
+    scheduleSave();
+  }
+
+  function clearNotes(r,c, record=true){
+    const cell = model.state[r][c]; if (cell.b) return;
+    const prev = { n:[...cell.notes], a:[...cell.autoNotes] };
+    if (!prev.n.length && !prev.a.length) return;
+    if (record) pushHistory({ type:'clearNotes', r, c, before: prev, after:{ n:[], a:[] } });
+    cell.notes.clear();
+    cell.autoNotes.clear();
+    refreshAutoNotesAll();
+    scheduleSave();
+  }
+
+  function clearAllNotes(record=true){
+    const cells=[];
+    for (let r=0;r<model.H;r++){
+      for (let c=0;c<model.W;c++){
+        const cell=model.state[r][c];
+        if (cell.b) continue;
+        if (cell.notes.size===0 && cell.autoNotes.size===0) continue;
+        cells.push({ r, c, n:[...cell.notes], a:[...cell.autoNotes] });
+        cell.notes.clear();
+        cell.autoNotes.clear();
+      }
+    }
+    if (record && cells.length) pushHistory({ type:'clearAllNotes', cells });
     refreshAutoNotesAll();
     scheduleSave();
   }
@@ -1004,7 +1048,7 @@ function createGame(seed, seedKey, meta) {
 
   function undo(){
     const op=history.pop(); if (!op) return;
-    const cell=model.state[op.r][op.c];
+    const cell=(op.r!=null && op.c!=null) ? model.state[op.r][op.c] : null;
     if (op.type==='place'||op.type==='clear'){
       const cur={ v:cell.value, n:[...cell.notes] };
       cell.value=op.before.v; cell.notes=new Set(op.before.n);
@@ -1012,16 +1056,39 @@ function createGame(seed, seedKey, meta) {
     } else if (op.type==='note'){
       if (op.before) cell.notes.add(op.digit); else cell.notes.delete(op.digit);
       redoStack.push(op);
+    } else if (op.type==='clearNotes'){
+      const cur={ n:[...cell.notes], a:[...cell.autoNotes] };
+      cell.notes=new Set(op.before.n);
+      cell.autoNotes=new Set(op.before.a||[]);
+      redoStack.push({ ...op, redoFrom:cur });
+    } else if (op.type==='clearAllNotes'){
+      op.cells.forEach(({r,c,n,a})=>{
+        const tgt=model.state[r][c];
+        tgt.notes=new Set(n);
+        tgt.autoNotes=new Set(a||[]);
+      });
+      redoStack.push(op);
     }
     refreshAutoNotesAll(); scheduleSave();
   }
   function redo(){
     const op=redoStack.pop(); if (!op) return;
-    const cell=model.state[op.r][op.c];
+    const cell=(op.r!=null && op.c!=null) ? model.state[op.r][op.c] : null;
     if (op.type==='place'||op.type==='clear'){
       cell.value=op.after.v; cell.notes=new Set(op.after.n); history.push(op);
     } else if (op.type==='note'){
       if (op.before) cell.notes.delete(op.digit); else cell.notes.add(op.digit); history.push(op);
+    } else if (op.type==='clearNotes'){
+      cell.notes=new Set(op.after?.n||[]);
+      cell.autoNotes=new Set(op.after?.a||[]);
+      history.push(op);
+    } else if (op.type==='clearAllNotes'){
+      op.cells.forEach(({r,c})=>{
+        const tgt=model.state[r][c];
+        tgt.notes.clear();
+        tgt.autoNotes.clear();
+      });
+      history.push(op);
     }
     refreshAutoNotesAll(); scheduleSave();
   }
@@ -1092,7 +1159,7 @@ function createGame(seed, seedKey, meta) {
   return {
     model,
     getElapsed, pauseTimer, resumeTimer, resetTimer,
-    applyPlace, applyToggleNote, clearCell, undo, redo,
+    applyPlace, applyToggleNote, clearCell, clearNotes, clearAllNotes, undo, redo,
     moveCursor, nextInRun,
     cellCandidates: (r,c)=>cellCandidates(model,r,c),
     cellIllegal: (r,c)=>cellIllegal(model,r,c),
@@ -1115,7 +1182,7 @@ function createGame(seed, seedKey, meta) {
     get highContrast(){return highContrast;}, set highContrast(v){highContrast=v; scheduleSave();},
     get reducedMotion(){return reducedMotion;}, set reducedMotion(v){reducedMotion=v; scheduleSave();},
     get strictMode(){return strictMode;}, set strictMode(v){strictMode=v; scheduleSave();},
-    get autoNotes(){return autoNotes;}, set autoNotes(v){autoNotes=v; if (v) refreshAutoNotesAll(); scheduleSave();},
+    get autoNotes(){return autoNotes;}, set autoNotes(v){autoNotes=v; if (v) refreshAutoNotesAll(); else clearAutoNotesAll(); scheduleSave();},
 
     get mistakes(){return mistakes;}, addMistake(){mistakes++; scheduleSave();},
     blink(){ lastBlinkAt=now(); }, shake(){ lastShakeAt=now(); },
@@ -1274,6 +1341,12 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
   const clueLabel = root.querySelector('#clueLabel');
   const candLabel = root.querySelector('#candLabel');
   const modeLabel = root.querySelector('#modeLabel');
+  const boardEl = root.querySelector('.board-layer');
+
+  const confettiCanvas = document.createElement('canvas');
+  Object.assign(confettiCanvas.style,{ position:'absolute', inset:'0', pointerEvents:'none', zIndex:'5', width:'100%', height:'100%' });
+  boardEl.appendChild(confettiCanvas);
+  const confettiFx = makeConfetti ? makeConfetti(confettiCanvas, { duration:6, linger:0.4 }) : { burst:()=>{}, resize:()=>{} };
 
   // Mode label
   const isDaily = !!game.meta.daily;
@@ -1291,6 +1364,7 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
   function buildKeypadHtml(){
     const keys=[]; for (let d=1; d<=9; d++) keys.push({t:String(d),act:`digit:${d}`});
     keys.push({ t:'Clear', act:'clear', cls:'zero' });
+    keys.push({ t:'Clear Notes', act:'clearNotes', cls:'zero' });
     keys.push({ t:'Notes ✏️', act:'toggleNotes', cls:'notes' });
     return keys.map(k=>`<div class="k ${k.cls||''}" data-act="${k.act}">${k.t}</div>`).join('');
   }
@@ -1301,6 +1375,7 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
     const k = e.target.closest('.k'); if (!k) return;
     const act=k.getAttribute('data-act');
     if (act==='clear') { clearCurrentCell(); return; }
+    if (act==='clearNotes') { clearNotesCurrentCell(); return; }
     if (act==='toggleNotes') { toggleNotes(); return; }
     if (act.startsWith('digit:')) onDigit(parseInt(act.split(':')[1],10));
   }
@@ -1443,7 +1518,6 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
 
   // ====== Responsive canvas ======
   let ctx, boardRect=null, metrics=null;
-  const boardEl = root.querySelector('.board-layer');
   const ro = new ResizeObserver(()=>{ resize(); });
   ro.observe(boardEl);
   on(window,'resize', resize, { passive:true });
@@ -1452,6 +1526,8 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
     const rect = boardEl.getBoundingClientRect();
     ({ ctx } = fitCanvas(canvas, rect.width, rect.height) || {});
     ctx = canvas.getContext('2d');
+    fitCanvas(confettiCanvas, rect.width, rect.height);
+    confettiFx?.resize?.();
     boardRect = rect;
     metrics = null;
     needsPaint=true;
@@ -1471,7 +1547,7 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
   const css = (v,f)=> getComputedStyle(document.documentElement).getPropertyValue(v).trim() || f;
 
   // ====== Render loop (dirty) ======
-  let rafId, needsPaint=true, lastTimeSec=-1;
+  let rafId, needsPaint=true, lastTimeSec=-1, hintFlash=null;
   function tick(){
     const sec = Math.floor(game.getElapsed()/1000);
     if (sec!==lastTimeSec){ lastTimeSec=sec; timeEl.textContent = fmtTime(game.getElapsed()); needsPaint=true; }
@@ -1552,13 +1628,16 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
           ctx.save(); ctx.globalAlpha=blinkAlpha*0.25; ctx.fillStyle=warn;
           roundRect(ctx,x+2,y+2,cellSize-4,cellSize-4,Math.min(6, cellSize*0.15)); ctx.fill(); ctx.restore();
         }
-      } else if (s.notes.size>0){
-        ctx.fillStyle='rgba(255,255,255,.65)';
-        ctx.font=`${Math.floor(cellSize*0.18)}px ui-sans-serif,system-ui`; ctx.textAlign='center'; ctx.textBaseline='middle';
-        [...s.notes].sort((a,b)=>a-b).forEach(d=>{
-          const idx=d-1, nx=x+((idx%3)+0.5)*(cellSize/3), ny=y+(Math.floor(idx/3)+0.5)*(cellSize/3);
-          ctx.fillText(String(d), nx, ny);
-        });
+      } else {
+        const mergedNotes = new Set([...(s.notes||[]), ...(s.autoNotes||[])]);
+        if (!game.peekActive && mergedNotes.size>0){
+          ctx.fillStyle='rgba(255,255,255,.65)';
+          ctx.font=`${Math.floor(cellSize*0.18)}px ui-sans-serif,system-ui`; ctx.textAlign='center'; ctx.textBaseline='middle';
+          [...mergedNotes].sort((a,b)=>a-b).forEach(d=>{
+            const idx=d-1, nx=x+((idx%3)+0.5)*(cellSize/3), ny=y+(Math.floor(idx/3)+0.5)*(cellSize/3);
+            ctx.fillText(String(d), nx, ny);
+          });
+        }
       }
 
       // peek overlay
@@ -1576,6 +1655,29 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
 
     // selection border
     { const x=cur.c*cellSize, y=cur.r*cellSize; ctx.lineWidth=Math.max(2,Math.floor(cellSize*0.06)); ctx.strokeStyle=brand; roundRectStroke(ctx,x+2,y+2,cellSize-4,cellSize-4, Math.min(6, cellSize*0.15)); }
+
+    // hint flash overlay (above selection)
+    if (hintFlash){
+      const elapsed = now()-hintFlash.at;
+      const dur = 1100;
+      if (elapsed>dur){ hintFlash=null; }
+      else {
+        const t = elapsed/dur;
+        const glow = 1 - Math.pow(t, 2.3);
+        const pulse = Math.sin(Math.min(1, t)*Math.PI);
+        const pad = 2 + pulse*6;
+        const x=hintFlash.c*cellSize + 2 - pad*0.4;
+        const y=hintFlash.r*cellSize + 2 - pad*0.4;
+        ctx.save();
+        ctx.lineWidth = Math.max(2, Math.floor(cellSize*0.07) + pulse*0.6);
+        ctx.strokeStyle = `rgba(255,255,255,${0.55*glow})`;
+        roundRectStroke(ctx,x,y,cellSize-4+pad*0.8,cellSize-4+pad*0.8, Math.min(10, cellSize*0.2));
+        ctx.globalAlpha = 0.25*glow;
+        ctx.fillStyle = `rgba(255,255,255,${0.28})`;
+        roundRect(ctx,x+3,y+3,cellSize-6,cellSize-6, Math.min(10, cellSize*0.18));
+        ctx.restore();
+      }
+    }
 
     const sinceShake = now()-game.lastShakeAt;
     if (sinceShake<220 && !game.reducedMotion){
@@ -1623,6 +1725,16 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
     updateGuideLabels();
   }
 
+  function clearNotesCurrentCell(){
+    const { r, c } = game.cursor;
+    const s = game.model.state[r][c];
+    if (s.b) return;
+    game.clearNotes(r,c,true);
+    needsPaint = true;
+    updateKeypadCandidates();
+    updateGuideLabels();
+  }
+
   function onDigit(d){
     const { r,c } = game.cursor; const s=game.model.state[r][c]; if (s.b) return;
 
@@ -1643,7 +1755,7 @@ function createRenderer(api, game, seedTitle, onRelaunch) {
     // no auto-move after digit; stay on cell
     if (game.isSolved()){
       game.pauseTimer();
-      confetti.burst?.({ count: 260 });
+      confettiFx?.burst?.({ count: 260 });
       sfx.fanfare?.();
       showSnack('Solved! 🎉');
     }
@@ -1864,7 +1976,11 @@ Mistakes: ${game.mistakes}`;
         <label style="display:flex;gap:8px;align-items:center;margin:6px 0">
           <input type="checkbox" ${game.reducedMotion?'checked':''} data-key="rm"> Reduced motion
         </label>
-        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center">
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn small" data-act="clear-cell-notes">Clear cell notes</button>
+            <button class="btn small" data-act="clear-board-notes">Clear all notes</button>
+          </div>
           <button class="btn small" data-act="close">Close</button>
         </div>
       </div>`;
@@ -1890,6 +2006,10 @@ Mistakes: ${game.mistakes}`;
         if (key==='rm') game.reducedMotion=chk.checked;
         needsPaint=true; updateKeypadCandidates();
       }
+      const clearCellBtn=e.target.closest('[data-act="clear-cell-notes"]');
+      if (clearCellBtn){ clearNotesCurrentCell(); showSnack('Notes cleared for this cell'); return; }
+      const clearBoardBtn=e.target.closest('[data-act="clear-board-notes"]');
+      if (clearBoardBtn){ game.clearAllNotes(true); needsPaint=true; updateKeypadCandidates(); updateGuideLabels(); showSnack('All notes cleared'); return; }
       const b=e.target.closest('[data-act="close"]'); if (b){ off(); panel.remove(); }
     });
     on(window,'keydown',(e)=>{ if (e.key==='Escape'){ off(); panel.remove(); } }, { once:true, capture:true });
@@ -1898,6 +2018,7 @@ Mistakes: ${game.mistakes}`;
   function doSimpleHint(){
     const res = game.revealHint(announce, showSnack);
     if (!res) return;
+    hintFlash = { ...res, at: now() };
     needsPaint = true;
     updateKeypadCandidates();
     updateGuideLabels();
