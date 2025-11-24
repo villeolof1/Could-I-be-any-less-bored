@@ -1,16 +1,21 @@
 // src/games/match3.js
-// Match-3+ — Old-engine core (init prevents immediate 3s; collapse spawns random) with:
-// • Balanced color distribution (init multiset bag + spawn bags per column/row)
-// • Post-stabilize permutation-only Move Enforcer (no recolors), so Nightmare = 1–2 moves
-// • CVD-safe palette + High-Contrast option
-// • Fullscreen-safe, compact settings
+// Match-3+ — Classic engine (no recolors, no specials), tough move-budget shaper,
+// balanced color bags, CVD-safe palette, shape assist ON by default,
+// fullscreen "New Game" wizard, scores/history, daily quests, confetti.
 //
-// No specials. 4 gravities supported (Nightmare can rotate gravity).
-// All “shaping” happens only after cascades finish; input is locked outside idle.
+// Focused fixes from feedback:
+// • Colors much more distinct (CVD-safe) + high-contrast outlines
+// • Shape Assist default ON; Color Assist removed
+// • Timer shake blinks red; stops immediately at 0
+// • Basic is a bit easier (5 colors, looser target window)
+// • Move overlay shows illegal attempts (“Moves: N · Illegal: X”)
+// • Initial board always enforced into target move window
+// • No recolors ever after init (enforcer = permutations only)
+// • Column/row spawn mini-bags to avoid color bias
 //
 // ---------------------------------------------------------------------
 
-import { fitCanvas, makeHUD } from '../kit/gamekit.js';
+import { fitCanvas, makeHUD, load, save, persistKey, makeConfetti } from '../kit/gamekit.js';
 
 export default {
   id: 'match3',
@@ -31,29 +36,27 @@ export default {
 
     const PER_TILE = 8;
 
-    // >>> Harder presets with TARGET MOVE RANGES (after each settle) <<<
+    // Difficulty presets (tight move targets; Basic slightly easier)
     const DIFFS = {
-      basic:    { n: 8,  colors: 7,  mode: 'endless', time: null,    moves: null, strikes: false, idleHints: true,  deadFreeze: false, gravityRot: false, target:{min:6, max:10} },
-      easy:     { n: 9,  colors: 8,  mode: 'timed',   time: 120e3,   moves: null, strikes: false, idleHints: true,  deadFreeze: false, gravityRot: false, target:{min:4, max:7}  },
-      medium:   { n: 9,  colors: 9,  mode: 'timed',   time: 100e3,   moves: null, strikes: false, idleHints: false, deadFreeze: false, gravityRot: false, target:{min:3, max:5}  },
-      hard:     { n: 10, colors: 9,  mode: 'moves',   time: null,    moves: 40,   strikes: true,  idleHints: false, deadFreeze: false, gravityRot: false, target:{min:3, max:5}  },
-      extreme:  { n: 10, colors: 10, mode: 'timed',   time: 90e3,    moves: null, strikes: true,  idleHints: false, deadFreeze: true,  gravityRot: false, target:{min:2, max:3}  },
-      nightmare:{ n: 11, colors: 10, mode: 'moves',   time: null,    moves: 35,   strikes: true,  idleHints: false, deadFreeze: true,  gravityRot: true,  target:{min:1, max:2}  },
+      basic:    { n: 8,  colors: 5,  mode: 'endless', time: null,  moves: null, strikes: false, idleHints: true,  deadFreeze: false, gravityRot: false, target:{min:8, max:14} },
+      easy:     { n: 9,  colors: 7,  mode: 'timed',   time: 120e3, moves: null, strikes: false, idleHints: true,  deadFreeze: false, gravityRot: false, target:{min:5, max:9}  },
+      medium:   { n: 9,  colors: 8,  mode: 'timed',   time: 100e3, moves: null, strikes: false, idleHints: false, deadFreeze: false, gravityRot: false, target:{min:4, max:7}  },
+      hard:     { n: 10, colors: 9,  mode: 'moves',   time: null,  moves: 40,   strikes: true,  idleHints: false, deadFreeze: false, gravityRot: false, target:{min:3, max:5}  },
+      extreme:  { n: 10, colors: 10, mode: 'timed',   time: 90e3,  moves: null, strikes: true,  idleHints: false, deadFreeze: true,  gravityRot: false, target:{min:2, max:3}  },
+      nightmare:{ n: 11, colors: 10, mode: 'moves',   time: null,  moves: 35,   strikes: true,  idleHints: false, deadFreeze: true,  gravityRot: true,  target:{min:1, max:2}  },
     };
 
     // ---------------- Config ----------------
     const defaults = {
       difficulty: 'nightmare',
-      mode: 'endless',            // label; preset overrides runtime
+      mode: 'endless',            // label; actual comes from preset
       reducedMotion: false,
-      colorAssist: false,
-      highContrast: true,         // NEW: crisp borders + glyphs
-      shapeAssist: false,         // big glyph overlay (Extreme+)
+      highContrast: true,         // outline
+      shapeAssist: true,          // ON by default across all modes
       hintsOnHard: false,         // ignored if preset idleHints=false
       showMoveCounter: true,
-      devOverlay: false,
     };
-    let cfg = { ...defaults };
+    let cfg = { ...defaults, ...load('match3','cfg',{}) };
 
     // Runtime params (derived)
     const params = {
@@ -70,13 +73,21 @@ export default {
       tgtMax: 5,
     };
 
-    // ---------------- Persistence ----------------
-    const SKEY = (k) => `match3:v13:${k}`;
-    const save = (k, v) => { try { localStorage.setItem(SKEY(k), JSON.stringify(v)); } catch {} };
-    const load = (k, d) => { try { const v = localStorage.getItem(SKEY(k)); return v ? JSON.parse(v) : d; } catch { return d; } };
-    const bests = load('bests', {});
-    const savedCfg = load('cfg', null);
-    if (savedCfg) cfg = { ...cfg, ...savedCfg };
+    // ---------------- Storage helpers ----------------
+    const KEY_SCORES = persistKey('match3','scores');   // { bucket: number[] } (cap 50)
+    const KEY_BEST   = persistKey('match3','hiscores'); // { bucket: best }
+    const KEY_WIZ    = persistKey('match3','lastWizard'); // {mode, difficulty}
+    const KEY_DAILY  = persistKey('match3','daily');    // { id, quests:[...], progress:{...}, streak }
+
+    function loadJSON(key, d){ try{ return JSON.parse(localStorage.getItem(key)) ?? d; }catch{ return d; } }
+    function saveJSON(key, v){ try{ localStorage.setItem(key, JSON.stringify(v)); }catch{} }
+
+    let scoresMap = loadJSON(KEY_SCORES, {});
+    let hiscores  = loadJSON(KEY_BEST, {});
+    let lastWizard= loadJSON(KEY_WIZ, null);
+    let daily     = loadJSON(KEY_DAILY, null);
+
+    const bucketOf = () => `${params.gameMode}:${cfg.difficulty}`;
 
     // ---------------- Wrapper / Top Bar ----------------
     const wrapper = document.createElement('div');
@@ -95,32 +106,6 @@ export default {
       display:'grid', gridTemplateColumns:'1fr auto', gap:'6px', alignItems:'center', width:'100%'
     });
 
-    const chip = (txt) => {
-      const b = document.createElement('button');
-      b.textContent = txt;
-      Object.assign(b.style, {
-        padding:'3px 8px', borderRadius:'999px',
-        border:'1px solid rgba(255,255,255,.16)',
-        background:'linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.03))',
-        color:'#e9ecf1', cursor:'pointer', fontSize:'12px', lineHeight:'1'
-      });
-      return b;
-    };
-
-    const diffKeys = ['basic','easy','medium','hard','extreme','nightmare'];
-    const modeKeys = ['endless','timed']; // cosmetic only
-    const modeLabels = { endless:'Endless', timed:'Timed (100s)' };
-    const diffChips = diffKeys.map(k => chip(k[0].toUpperCase()+k.slice(1)));
-    const modeChips = modeKeys.map(k => chip(modeLabels[k]));
-
-    const rowL = document.createElement('div');
-    Object.assign(rowL.style, { display:'flex', flexWrap:'wrap', gap:'4px', alignItems:'center' });
-    diffChips.forEach(b=>rowL.appendChild(b));
-    const sep = () => { const s=document.createElement('span'); s.style.width='4px'; return s; };
-    rowL.appendChild(sep());
-    modeChips.forEach(b=>rowL.appendChild(b));
-
-    // Right group: Score / Time / Settings
     const mkChipBox = (label) => {
       const box = document.createElement('div');
       Object.assign(box.style, {
@@ -143,65 +128,91 @@ export default {
       const b = document.createElement('button');
       b.textContent = txt;
       Object.assign(b.style, {
-        padding:'4px 8px', borderRadius:'9px',
+        padding:'6px 10px', borderRadius:'10px',
         border:'1px solid rgba(255,255,255,.14)',
-        background:'linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02))',
+        background:'linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.03))',
         color:'#e9ecf1', cursor:'pointer', boxShadow:'0 2px 8px rgba(0,0,0,.25)', fontSize:'12px', lineHeight:'1'
       });
       return b;
     };
-    const settingsBtn= mkBtn('⚙');
+    const settingsBtn = mkBtn('⚙');
+    const newGameBtn  = mkBtn('New Game');
 
     const rowR = document.createElement('div');
     Object.assign(rowR.style, { display:'flex', gap:'6px', alignItems:'center' });
     rowR.appendChild(scoreChip.box);
     rowR.appendChild(timeMovesChip.box);
     rowR.appendChild(settingsBtn);
+    rowR.appendChild(newGameBtn);
 
-    bar.appendChild(rowL);
+    bar.appendChild(document.createElement('div')); // (left side kept empty for now)
     bar.appendChild(rowR);
     wrapper.appendChild(bar);
 
+    // Subtitle row (mode/difficulty + hiscore)
     const subtitle = document.createElement('div');
-    subtitle.style.opacity = '.75';
+    subtitle.style.opacity = '.85';
     subtitle.style.fontSize = '12px';
     subtitle.style.marginTop = '-2px';
     subtitle.style.textAlign = 'center';
     subtitle.style.width = '100%';
     wrapper.appendChild(subtitle);
 
-    // Difficulty badge
-    const diffBadge = document.createElement('span');
-    diffBadge.style.marginLeft = '6px';
-    diffBadge.style.padding = '2px 6px';
-    diffBadge.style.border = '1px solid rgba(255,255,255,.16)';
-    diffBadge.style.borderRadius = '999px';
-    diffBadge.style.fontSize = '10px';
-    diffBadge.style.opacity = '.9';
-    subtitle.appendChild(diffBadge);
-
-    // Game canvas
+    // Game canvas — centered
+    const canvasWrap = document.createElement('div');
+    Object.assign(canvasWrap.style, { position:'relative', width:'100%' });
     const canvas = document.createElement('canvas');
     const g = fitCanvas(canvas, 8 * TILE, 8 * TILE);
     Object.assign(canvas.style, {
       display:'block', margin:'0 auto', touchAction:'none',
       borderRadius:'14px', border:'1px solid rgba(255,255,255,.06)'
     });
-    wrapper.appendChild(canvas);
+    canvasWrap.appendChild(canvas);
+    wrapper.appendChild(canvasWrap);
 
-    // Move counter overlay
+    // Confetti overlay
+    const confettiCanvas = document.createElement('canvas');
+    Object.assign(confettiCanvas.style, {
+      position:'absolute', inset:'0', pointerEvents:'none'
+    });
+    canvasWrap.appendChild(confettiCanvas);
+    const confetti = makeConfetti(confettiCanvas);
+
+    // Move counter overlay (optional)
     const moveOverlay = document.createElement('div');
     Object.assign(moveOverlay.style, {
       position:'relative', width:'100%', display:'grid', justifyItems:'center'
     });
     const moveText = document.createElement('div');
     Object.assign(moveText.style, {
-      marginTop:'4px', fontSize:'11px', opacity:'.8'
+      marginTop:'4px', fontSize:'11px', opacity:'.9'
     });
     moveOverlay.appendChild(moveText);
     wrapper.appendChild(moveOverlay);
 
-    // ---------------- Right Settings Drawer (compact + fullscreen-safe) ----------------
+    // Daily quests panel (collapsible)
+    const dailyPanel = document.createElement('div');
+    Object.assign(dailyPanel.style, {
+      width:'100%', display:'grid', justifyItems:'center', marginTop:'2px'
+    });
+    const dailyCard = document.createElement('div');
+    Object.assign(dailyCard.style, {
+      display:'grid', gap:'6px', padding:'8px 10px',
+      border:'1px solid rgba(255,255,255,.12)', borderRadius:'12px',
+      background:'linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02))',
+      maxWidth:'min(92vw, 680px)'
+    });
+    const dailyHeader = document.createElement('div');
+    dailyHeader.style.display='flex'; dailyHeader.style.justifyContent='space-between'; dailyHeader.style.alignItems='center';
+    const dailyTitle = document.createElement('strong'); dailyTitle.textContent='Daily Quests';
+    const dailyToggle = mkBtn('▼'); dailyToggle.style.padding='2px 6px';
+    dailyHeader.appendChild(dailyTitle); dailyHeader.appendChild(dailyToggle);
+    const dailyList = document.createElement('div'); dailyList.style.display='grid'; dailyList.style.gap='4px';
+    dailyCard.appendChild(dailyHeader); dailyCard.appendChild(dailyList);
+    dailyPanel.appendChild(dailyCard);
+    wrapper.appendChild(dailyPanel);
+
+    // ---------------- Settings Drawer (compact, fullscreen-safe) ----------------
     const backdrop = document.createElement('div');
     Object.assign(backdrop.style, {
       position:'fixed', inset:'0', background:'rgba(0,0,0,0.14)',
@@ -219,35 +230,27 @@ export default {
     drHead.textContent = 'Settings';
     Object.assign(drHead.style, { padding:'8px 10px', fontWeight:'600', borderBottom:'1px solid rgba(255,255,255,.08)' });
     const drBody = document.createElement('div');
-    Object.assign(drBody.style, { padding:'8px 10px', display:'grid', gap:'4px', overflow:'auto' });
+    Object.assign(drBody.style, { padding:'8px 10px', display:'grid', gap:'6px', overflow:'auto' });
 
     const mkToggle = (label, key) => {
       const line = document.createElement('label');
-      Object.assign(line.style, { display:'grid', gridTemplateColumns:'1fr auto', alignItems:'center', gap:'8px', padding:'4px 0' });
+      Object.assign(line.style, { display:'grid', gridTemplateColumns:'1fr auto', alignItems:'center', gap:'8px', padding:'3px 0' });
       const span = document.createElement('span'); span.textContent = label; span.style.opacity = '.88';
       const input = document.createElement('input'); input.type='checkbox'; input.checked = !!cfg[key];
       input.addEventListener('change', ()=>{
-        cfg[key] = !!input.checked;
-        save('cfg', cfg);
+        cfg[key] = !!input.checked; save('match3','cfg',cfg);
         if (key === 'showMoveCounter') updateMoveCounter();
+        if (key === 'reducedMotion') {/* respected in timings */}
       });
       line.appendChild(span); line.appendChild(input);
       return line;
     };
 
-    const reducedRow  = mkToggle('Reduced motion', 'reducedMotion');
-    const colorRow    = mkToggle('Color assist',   'colorAssist');
-    const contrastRow = mkToggle('High contrast tiles', 'highContrast');
-    const shapeRow    = mkToggle('Shape assist (Extreme+)', 'shapeAssist');
-    const hintRow     = mkToggle('Hints on hard modes', 'hintsOnHard');
-    const counterRow  = mkToggle('Show move counter', 'showMoveCounter');
-
-    drBody.appendChild(reducedRow);
-    drBody.appendChild(colorRow);
-    drBody.appendChild(contrastRow);
-    drBody.appendChild(shapeRow);
-    drBody.appendChild(hintRow);
-    drBody.appendChild(counterRow);
+    drBody.appendChild(mkToggle('Reduced motion', 'reducedMotion'));
+    drBody.appendChild(mkToggle('High contrast tiles', 'highContrast'));
+    drBody.appendChild(mkToggle('Shape assist (All modes)', 'shapeAssist'));
+    drBody.appendChild(mkToggle('Hints on hard modes', 'hintsOnHard'));
+    drBody.appendChild(mkToggle('Show move counter', 'showMoveCounter'));
 
     drawer.appendChild(drHead); drawer.appendChild(drBody);
 
@@ -273,9 +276,8 @@ export default {
     backdrop.addEventListener('click', () => openDrawer(false));
     document.addEventListener('keydown', (e)=>{ if (e.key === 'Escape' && drawerOpen) openDrawer(false); });
 
-    // ---------------- HUD (polyfill) ----------------
-    const hud = makeHUD(api, { score: true, lives: false, meta: true });
-    if (typeof hud.setMeta !== 'function') hud.setMeta = () => {};
+    // ---------------- HUD ----------------
+    const hud = makeHUD(api, { score: true, lives: false, time: false });
 
     // ---------------- RNG / State ----------------
     let rnd = () => Math.random();
@@ -293,7 +295,7 @@ export default {
 
     // State guards
     let animating = false, resolving = false;
-    let enforcing = false;        // NEW: explicit enforcement state
+    let enforcing = false;        // explicit enforcement state
     let inputLocked = false;      // deadboard freeze
     let lastTick = performance.now();
     const tasks = [];
@@ -310,22 +312,31 @@ export default {
     let lastMoveCount = 0;
     let lastSeed = (Math.random()*0xffffffff)>>>0;
 
-    // Strike/resolve counters
-    let invalidStreak = 0;
+    // Illegal move tracking
+    let illegalStreak = 0;
+    let illegalTotal  = 0;
+
+    // Resolve counters
     let resolveCycles = 0;
 
-    // ---------------- Color palette (CVD-safe) ----------------
+    // Session stats (for daily quests)
+    let tilesClearedThisRun = 0;
+    let cascadesThisChain = 0;
+    let sawRun4ThisRun = false;
+
+    // ---------------- High-contrast, CVD-safe palette ----------------
+    // Curated by perceptual spacing (approx. OKLCH distance). Wide lightness spread.
     const palette = [
-      '#3B5DC9', // Indigo
-      '#F68E26', // Orange
-      '#1FB7A6', // Teal
-      '#D43DA0', // Magenta
-      '#8BC34A', // Lime
-      '#E53935', // Red
-      '#1E88E5', // Blue
-      '#FFB300', // Amber
-      '#7E57C2', // Purple
-      '#26C6DA', // Cyan
+      '#2043D0', // deep blue
+      '#FF6B00', // vivid orange
+      '#12B886', // teal green
+      '#D81B60', // magenta rose
+      '#8BC34A', // lime
+      '#E53935', // red
+      '#1E88E5', // bright blue
+      '#FFC107', // amber
+      '#7E57C2', // purple
+      '#00BCD4', // cyan
     ];
     const glyphs = ['●','▲','■','◆','★','●','▲','■','◆','★'];
     function colorFill(idx){
@@ -354,11 +365,10 @@ export default {
     }
     function inBounds(r,c){ return r>=0 && r<params.n && c>=0 && c<params.n; }
 
-    // ---------------- Init: Balanced, no 3s, deterministic (FIXED) ----------------
+    // ---------------- Init: Balanced bag fill, no 3s ----------------
     function initFillBalanced(){
       const n = params.n, k = params.colors;
 
-      // Build a global bag with nearly equal counts
       const total = n*n;
       const base = Math.floor(total / k);
       let rem = total - base*k;
@@ -370,13 +380,13 @@ export default {
 
       board = Array.from({ length: n }, () => Array(n).fill(null));
 
-      const placed = []; // {r,c} previously filled cells (row-major)
+      const placed = []; // {r,c}
       for (let r=0;r<n;r++){
         for (let c=0;c<n;c++){
           let chosen = null;
           const rejected = [];
 
-          // Prefer colors that don't create immediate triples (left/up)
+          // prefer colors that don't create immediate triples (left/up)
           for (let guard=0; guard<Math.max(1, bag.length); guard++){
             if (bag.length===0) break;
             const idx = (rnd()*bag.length)|0;
@@ -392,7 +402,7 @@ export default {
           }
 
           if (chosen==null){
-            // Try safe permutation with earlier cell
+            // try swapping with a previous placement so both become valid
             let swapped = false;
             for (let pi = placed.length-1; pi>=0 && !swapped; pi--){
               const {r:pr, c:pc} = placed[pi];
@@ -434,7 +444,6 @@ export default {
       if (U1 && U2 && U1.color===color && U2.color===color) return true;
       return false;
     }
-    // For already-placed earlier cell (pr,pc), check only left/up triples
     function makesImmediateAtInitForPlaced(pr,pc,color){
       const L1 = board[pr]?.[pc-1], L2 = board[pr]?.[pc-2];
       if (L1 && L2 && L1.color===color && L2.color===color) return true;
@@ -447,6 +456,7 @@ export default {
     function findMatchesClassic() {
       const n = params.n;
       const kill = Array.from({length:n}, ()=>Array(n).fill(false));
+      let sawRun4 = false;
 
       // horizontal
       for (let r=0; r<n; r++){
@@ -454,7 +464,13 @@ export default {
         for (let c=1; c<=n; c++){
           const same = c<n && board[r][c] && board[r][c-1] && board[r][c].color===board[r][c-1].color;
           if (same) run++;
-          else { if (run>=3) for (let k=1; k<=run; k++) kill[r][c-k] = true; run=1; }
+          else {
+            if (run>=3){
+              for (let k=1; k<=run; k++) kill[r][c-k] = true;
+              if (run>=4) sawRun4 = true;
+            }
+            run=1;
+          }
         }
       }
       // vertical
@@ -463,15 +479,21 @@ export default {
         for (let r=1; r<=n; r++){
           const same = r<n && board[r][c] && board[r-1][c] && board[r][c].color===board[r-1][c].color;
           if (same) run++;
-          else { if (run>=3) for (let k=1; k<=run; k++) kill[r-k][c] = true; run=1; }
+          else {
+            if (run>=3){
+              for (let k=1; k<=run; k++) kill[r-k][c] = true;
+              if (run>=4) sawRun4 = true;
+            }
+            run=1;
+          }
         }
       }
 
       const any = kill.some(row => row.some(Boolean));
-      return { kill, any };
+      return { kill, any, sawRun4 };
     }
 
-    // Local match check for swap accept
+    // Local match check
     function isMatchAtLocal(r,c){
       const n = params.n;
       const cell = board[r]?.[c]; if (!cell) return false;
@@ -487,7 +509,7 @@ export default {
       return v>=3;
     }
 
-    // Count/list moves
+    // Moves
     function countValidMoves(){
       const n = params.n; let count = 0;
       for (let r=0;r<n;r++){
@@ -615,12 +637,14 @@ export default {
       if (cleared > 0) {
         score += PER_TILE * cleared;
         setScore(score);
+        tilesClearedThisRun += cleared;
+        maybeUpdateDaily('tiles');
       }
 
       return cleared;
     }
 
-    // ---------------- Safe rotation helpers (fix for '-1' crash) ----------------
+    // ---------------- Safe rotation helpers ----------------
     function rotateRowSegmentSafe(r, start, len, dir){
       const n = params.n;
       if (!(r>=0 && r<n)) return false;
@@ -673,7 +697,7 @@ export default {
       return true;
     }
 
-    // ---------------- Permutation-only Move Enforcer (post-stabilize) ----------------
+    // ---------------- Permutation-only Move Enforcer ----------------
     function enforcePermute(min, max){
       const capEdits = 90;
       const capRebuilds = 2;
@@ -711,8 +735,10 @@ export default {
           const B = all[(rnd()*all.length)|0]; if (!B) continue;
           if (A.r===B.r && A.c===B.c) continue;
           if (Math.abs(A.r-B.r)+Math.abs(A.c-B.c)<=1) continue;
-          const c1 = board[A.r][A.c]?.color, c2 = board[B.r][B.c]?.color;
-          if (c1==null || c2==null || c1===c2) continue;
+          const c1 = board[A.r][A.c]?.color, c2 = board[B.r][B.r?A.c:B.c]?.color; // correction below
+          // fix: typo; use correct B.c
+          const c2fixed = board[B.r]?.[B.c]?.color;
+          if (c1==null || c2fixed==null || c1===c2fixed) continue;
 
           swapCells(A.r,A.c,B.r,B.c);
           const safe = safeNoMatches();
@@ -732,19 +758,18 @@ export default {
 
         const isRow = rnd()<0.5;
         if (isRow){
-          // len in [3..min(5,n)], clamped; start in [0..n-len]
           const len = Math.max(3, Math.min(5, n));
           const startMax = n - len;
           const start = startMax > 0 ? ((rnd()*(startMax+1))|0) : 0;
           const dir = rnd()<0.5 ? 1 : -1;
+          const row = (rnd()*n)|0;
 
-          if (!rotateRowSegmentSafe((rnd()*n)|0, start, len, dir)) return false;
+          if (!rotateRowSegmentSafe(row, start, len, dir)) return false;
 
           const safe = safeNoMatches();
           const m = safe ? countValidMoves() : curMoves+9999;
           if (!safe || (wantDown ? (m>curMoves) : (m<curMoves))){
-            // revert by rotating the same row back opposite
-            rotateRowSegmentSafe((rnd()*n)|0, start, len, -dir); // best-effort revert (row choice randomized)
+            rotateRowSegmentSafe(row, start, len, -dir);
             return false;
           }
           return true;
@@ -753,13 +778,14 @@ export default {
           const startMax = n - len;
           const start = startMax > 0 ? ((rnd()*(startMax+1))|0) : 0;
           const dir = rnd()<0.5 ? 1 : -1;
+          const col = (rnd()*n)|0;
 
-          if (!rotateColSegmentSafe((rnd()*n)|0, start, len, dir)) return false;
+          if (!rotateColSegmentSafe(col, start, len, dir)) return false;
 
           const safe = safeNoMatches();
           const m = safe ? countValidMoves() : curMoves+9999;
           if (!safe || (wantDown ? (m>curMoves) : (m<curMoves))){
-            rotateColSegmentSafe((rnd()*n)|0, start, len, -dir);
+            rotateColSegmentSafe(col, start, len, -dir);
             return false;
           }
           return true;
@@ -819,12 +845,16 @@ export default {
 
     // ---------------- Resolver ----------------
     function resolveClassic(){
-      const { kill, any } = findMatchesClassic();
+      const { kill, any, sawRun4 } = findMatchesClassic();
       if (any) {
         // mark for visual pop
         for (let r=0; r<params.n; r++)
           for (let c=0; c<params.n; c++)
             if (kill[r][c] && board[r][c]) board[r][c].clearing = true;
+
+        if (sawRun4) { sawRun4ThisRun = true; maybeUpdateDaily('run4'); }
+
+        cascadesThisChain++;
 
         schedule(cfg.reducedMotion?1:CLEAR_MS, ()=>{
           // remove marked and collapse+refill
@@ -840,6 +870,8 @@ export default {
       } else {
         // settle complete
         resolveCycles++;
+        if (cascadesThisChain>0){ maybeUpdateDaily('cascades', cascadesThisChain); cascadesThisChain=0; }
+
         animating = false;
         resolving = false;
 
@@ -849,7 +881,7 @@ export default {
           toast(`Gravity: ${params.gravity.toUpperCase()}`);
         }
 
-        // Enforce move budget (Hard+)
+        // Enforce move budget (Hard+), also after initial start
         const hardish = (cfg.difficulty==='hard' || cfg.difficulty==='extreme' || cfg.difficulty==='nightmare');
         if (hardish){
           enforcePermute(params.tgtMin, params.tgtMax);
@@ -863,7 +895,7 @@ export default {
           if (params.deadFreeze) {
             inputLocked = true;
             toast('No moves — Shuffling');
-            schedule(1000, ()=>{ inputLocked = false; softShuffle(true); lastMoveCount = countValidMoves(); updateMoveCounter(); });
+            schedule(900, ()=>{ inputLocked = false; softShuffle(true); lastMoveCount = countValidMoves(); updateMoveCounter(); });
           } else {
             softShuffle(false);
           }
@@ -891,7 +923,7 @@ export default {
       // Accept swap only if it creates a match
       const will = isMatchAtLocal(r1,c1) || isMatchAtLocal(r2,c2);
       if (!will){
-        invalidStreak++;
+        illegalStreak++; illegalTotal++; maybeUpdateDaily('illegal');
         addGhostTrail(r1,c1,r2-r1,c2-c1);
         schedule(cfg.reducedMotion?0:INVALID_MS, ()=>{
           const A=board[r2][c2], B=board[r1][c1];
@@ -900,8 +932,8 @@ export default {
         });
 
         // Strike penalty on Hard+
-        if (params.strikeEnabled && invalidStreak >= 3) {
-          invalidStreak = 0;
+        if (params.strikeEnabled && illegalStreak >= 3) {
+          illegalStreak = 0;
           if (params.gameMode === 'moves' && params.movesLeft != null) {
             params.movesLeft = Math.max(0, params.movesLeft - 1);
             updateTimeMovesChip();
@@ -912,10 +944,12 @@ export default {
             if (timeLeftMs === 0) { showRecap(); }
           }
         }
+
+        updateMoveCounter();
         return false;
       }
 
-      invalidStreak = 0;
+      illegalStreak = 0;
       animating = true; resolving = true;
 
       // Moves mode: consume 1 move on accepted swap
@@ -962,7 +996,7 @@ export default {
         swapCells(r1,c1,r2,c2);
         if (findMatchesClassic().any) swapCells(r1,c1,r2,c2);
       }
-      if (!hasAnyValidMove()){ initFillBalanced(); }
+      if (!hasAnyValidMove()){ initFillBalanced(); resetSpawnBags(); }
       if (!silent) toast('No moves — Shuffling');
       lastMoveCount = countValidMoves();
       updateMoveCounter();
@@ -1049,14 +1083,10 @@ export default {
       roundRect(g, x, y, w, h, 10); g.fill();
 
       if (cfg.highContrast){
-        g.lineWidth = 1.5; g.strokeStyle = 'rgba(255,255,255,.8)';
+        g.lineWidth = 1.6; g.strokeStyle = 'rgba(255,255,255,.9)';
         roundRect(g, x, y, w, h, 10); g.stroke();
       }
-      if (cfg.colorAssist){
-        g.fillStyle = 'rgba(255,255,255,.8)';
-        g.fillRect(x+6, y+6, 6, 6);
-      }
-      if (cfg.shapeAssist && (cfg.difficulty==='extreme' || cfg.difficulty==='nightmare')){
+      if (cfg.shapeAssist){
         g.fillStyle = 'rgba(255,255,255,.95)';
         g.font = `${Math.floor(Math.min(w,h)*0.5)}px system-ui, sans-serif`;
         g.textAlign='center'; g.textBaseline='middle';
@@ -1118,6 +1148,7 @@ export default {
           timeLeftMs -= dt;
           if (timeLeftMs <= 0) {
             timeLeftMs = 0;
+            // cease shake + blink immediately
             canvas.style.transform=''; shakingActive=false; timeWarning=false;
             showRecap();
           }
@@ -1126,7 +1157,7 @@ export default {
         timeMovesChip.val.textContent = Math.max(0, Math.ceil(timeLeftMs/1000)).toString();
 
         const prev = timeWarning;
-        timeWarning = timeLeftMs <= 5000;
+        timeWarning = timeLeftMs > 0 && timeLeftMs <= 5000;
         if (timeWarning) {
           const blinkAlpha = 0.22 + 0.22 * Math.sin(now() / 80);
           g.fillStyle = `rgba(255,0,0,${blinkAlpha})`;
@@ -1136,7 +1167,7 @@ export default {
           const oy = (rnd()*2-1)*s;
           canvas.style.transform = `translate(${ox}px, ${oy}px)`;
           shakingActive = true;
-        } else if (prev && !timeWarning) {
+        } else if ((prev && !timeWarning) || timeLeftMs===0) {
           canvas.style.transform = ''; shakingActive=false;
         }
       } else if (params.gameMode === 'moves') {
@@ -1189,17 +1220,17 @@ export default {
       const preset = DIFFS[cfg.difficulty] || DIFFS.medium;
       const modeLabel = preset.mode==='timed' ? `Timed: ${Math.round((preset.time ?? DEFAULT_TIMED_MS)/1000)}s`
                        : preset.mode==='moves' ? `Move limit: ${preset.moves} moves`
-                       : 'Endless: thinky cascades, no timer.';
+                       : 'Endless mode';
       const tgt = preset.target ? ` • Target moves: ${preset.target.min}–${preset.target.max}` : '';
-      subtitle.textContent = modeLabel + tgt;
-      const name = cfg.difficulty[0].toUpperCase()+cfg.difficulty.slice(1);
-      diffBadge.textContent = name;
+      const key = `${preset.mode}:${cfg.difficulty}`;
+      const best = hiscores[key] ?? 0;
+      subtitle.textContent = `${modeLabel}${tgt} • Best: ${best.toLocaleString()}`;
     }
 
     function updateMoveCounter(){
       moveOverlay.style.display = cfg.showMoveCounter ? 'grid' : 'none';
       if (!cfg.showMoveCounter) return;
-      moveText.textContent = `Legal moves: ${lastMoveCount}`;
+      moveText.textContent = `Moves: ${lastMoveCount} · Illegal: ${illegalTotal}`;
     }
 
     // ------ Recap ------
@@ -1208,18 +1239,19 @@ export default {
     const recapCard = document.createElement('div');
     Object.assign(recapCard.style, {
       background:'rgba(18,20,26,.98)', border:'1px solid rgba(255,255,255,.1)',
-      borderRadius:'16px', padding:'14px 16px', minWidth:'300px',
+      borderRadius:'16px', padding:'14px 16px', minWidth:'320px',
       boxShadow:'0 18px 48px rgba(0,0,0,.5)', textAlign:'center',
       transform:'scale(.9)', opacity:'0', transition:'transform .18s ease, opacity .18s ease'
     });
-    const recapTitle = document.createElement('div'); recapTitle.textContent = 'DONE';
+    const recapTitle = document.createElement('div'); recapTitle.textContent = 'Game Over';
     recapTitle.style.fontSize = '18px'; recapTitle.style.marginBottom = '6px'; recapTitle.style.letterSpacing='.5px';
     const recapScore = document.createElement('div'); recapScore.style.fontSize = '20px'; recapScore.style.marginBottom = '6px';
     const recapStats = document.createElement('div'); recapStats.style.opacity='.85'; recapStats.style.fontSize='12px'; recapStats.style.marginBottom='10px';
-    const againBtn   = mkBtn('Play again'); const settingsShort = mkBtn('Change settings');
+    const recentBox  = document.createElement('div'); recentBox.style.fontSize='11px'; recentBox.style.opacity='.85'; recentBox.style.marginBottom='10px';
+    const againBtn   = mkBtn('Play again'); const settingsShort = mkBtn('Settings');
     const btnRow = document.createElement('div'); Object.assign(btnRow.style, { display:'flex', gap:'6px', justifyContent:'center' });
     btnRow.appendChild(againBtn); btnRow.appendChild(settingsShort);
-    recapCard.appendChild(recapTitle); recapCard.appendChild(recapScore); recapCard.appendChild(recapStats); recapCard.appendChild(btnRow);
+    recapCard.appendChild(recapTitle); recapCard.appendChild(recapScore); recapCard.appendChild(recapStats); recapCard.appendChild(recentBox); recapCard.appendChild(btnRow);
     recap.appendChild(recapCard);
 
     function recapHost(){ return document.fullscreenElement || document.body; }
@@ -1227,30 +1259,225 @@ export default {
     mountRecap();
     document.addEventListener('fullscreenchange', mountRecap);
 
+    function pushScore(bucket, val){
+      const arr = scoresMap[bucket] ?? [];
+      arr.push(val); if (arr.length>50) arr.splice(0, arr.length-50);
+      scoresMap[bucket] = arr; saveJSON(KEY_SCORES, scoresMap);
+      const best = Math.max(val, hiscores[bucket] ?? 0);
+      const isBest = best !== (hiscores[bucket] ?? 0);
+      hiscores[bucket] = best; saveJSON(KEY_BEST, hiscores);
+      return { best, isBest };
+    }
+
     function showRecap(){
-      const key = `${params.gameMode}:${cfg.difficulty}`;
-      const mult = (cfg.difficulty==='basic'?1.0: cfg.difficulty==='easy'?1.1: cfg.difficulty==='medium'?1.25: cfg.difficulty==='hard'?1.5: cfg.difficulty==='extreme'?1.75:2.0);
+      const key = bucketOf();
+      const mult = (cfg.difficulty==='basic'?1.0: cfg.difficulty==='easy'?1.12: cfg.difficulty==='medium'?1.25: cfg.difficulty==='hard'?1.5: cfg.difficulty==='extreme'?1.75:2.0);
       let final = Math.round(score * mult);
       if (params.gameMode==='timed') {
         const bonus = Math.min(15, Math.floor(timeLeftMs/1000));
         final = Math.round(final * (1 + bonus/100));
       }
-      const prevBest = bests[key] || 0;
-      const isBest = final > prevBest;
-      if (isBest) { bests[key] = final; save('bests', bests); }
 
+      // Daily quest: finish timed
+      if (params.gameMode==='timed') maybeUpdateDaily('finishTimed');
+
+      const { best, isBest } = pushScore(key, final);
+
+      // Confetti on best
+      if (isBest) confetti.burst({ count: 240 });
+
+      // UI
       recapScore.textContent = `Final: ${final.toLocaleString()}${isBest?'  🎉 New Best!':''}`;
-      recapStats.innerHTML = `Board: ${params.n}×${params.n} &nbsp;•&nbsp; Colors: ${params.colors} &nbsp;•&nbsp; Legal moves: ${lastMoveCount}`;
+      recapStats.innerHTML = `Board: ${params.n}×${params.n} • Colors: ${params.colors} • Legal moves: ${lastMoveCount} • Illegal: ${illegalTotal}`;
+      const recent = scoresMap[key] ?? [];
+      const lastFew = recent.slice(-5).map(v=>v.toLocaleString()).join(' · ');
+      recentBox.textContent = `Recent: ${lastFew || '—'} • Best: ${best.toLocaleString()}`;
+
       recap.style.display = 'grid';
       requestAnimationFrame(()=>{ recapCard.style.transform='scale(1)'; recapCard.style.opacity='1'; });
+
+      // Update subtitle with new best
+      updateSubtitle();
     }
     againBtn.addEventListener('click', ()=>{ recap.style.display='none'; start(true); });
     settingsShort.addEventListener('click', ()=>{ recap.style.display='none'; openDrawer(true); });
 
-    // ---------------- Start / Restart ----------------
-    function applyDifficulty() {
-      const d = DIFFS[cfg.difficulty] || DIFFS.medium;
+    // ---------------- New Game Wizard (fullscreen) ----------------
+    const wizard = document.createElement('div');
+    Object.assign(wizard.style, {
+      position:'fixed', inset:'0', display:'none', placeItems:'center', zIndex:'100001',
+      background:'rgba(0,0,0,.5)'
+    });
+    const wCard = document.createElement('div');
+    Object.assign(wCard.style, {
+      background:'rgba(18,20,26,.98)', border:'1px solid rgba(255,255,255,.12)',
+      borderRadius:'16px', padding:'16px', width:'min(92vw, 560px)', boxShadow:'0 18px 48px rgba(0,0,0,.5)',
+      transform:'translateY(12px)', opacity:'0', transition:'transform .18s ease, opacity .18s ease'
+    });
+    const wTitle = document.createElement('div'); wTitle.textContent='New Game'; wTitle.style.fontSize='18px'; wTitle.style.marginBottom='8px'; wTitle.style.textAlign='center';
+    const wBody  = document.createElement('div'); Object.assign(wBody.style, { display:'grid', gap:'10px' });
+    const wRow   = (label, nodes=[])=>{
+      const line = document.createElement('div');
+      Object.assign(line.style, { display:'grid', gap:'8px' });
+      const lab = document.createElement('div'); lab.textContent = label; lab.style.opacity='.85'; lab.style.fontSize='12px';
+      const box = document.createElement('div'); Object.assign(box.style, { display:'flex', flexWrap:'wrap', gap:'6px' });
+      nodes.forEach(n=>box.appendChild(n));
+      line.appendChild(lab); line.appendChild(box);
+      return line;
+    };
+    function chip(txt){ const b=mkBtn(txt); b.style.padding='6px 10px'; return b; }
 
+    // Step 1: mode
+    const modeBtns = ['endless','timed','moves'].map(m=> chip(m[0].toUpperCase()+m.slice(1)));
+    let pickMode = lastWizard?.mode || 'timed';
+    modeBtns.forEach((b,i)=> b.addEventListener('click', ()=>{ pickMode = ['endless','timed','moves'][i]; setWizardActive(); }));
+
+    // Step 2: difficulty
+    const diffList = ['basic','easy','medium','hard','extreme','nightmare'];
+    const diffBtns = diffList.map(k=> chip(k[0].toUpperCase()+k.slice(1)));
+    let pickDiff = lastWizard?.difficulty || 'medium';
+    diffBtns.forEach((b,i)=> b.addEventListener('click', ()=>{ pickDiff = diffList[i]; setWizardActive(); }));
+
+    const startBtn = mkBtn('Start'); startBtn.style.width='100%'; startBtn.style.marginTop='4px';
+    startBtn.addEventListener('click', ()=>{
+      const d = DIFFS[pickDiff] || DIFFS.medium;
+      cfg.difficulty = pickDiff;
+      save('match3','cfg',cfg);
+      lastWizard = { mode: pickMode, difficulty: pickDiff };
+      saveJSON(KEY_WIZ, lastWizard);
+
+      // force mode to selected; presets define default, but we respect explicit mode choice
+      const d2 = { ...d, mode: pickMode };
+      applyPreset(d2);
+      wizard.style.display='none';
+      start(true);
+    });
+
+    function setWizardActive(){
+      // highlight
+      modeBtns.forEach((b,i)=>{ const key=['endless','timed','moves'][i]; const on=(key===pickMode); b.style.outline= on?'2px solid rgba(255,255,255,.35)':''; });
+      diffBtns.forEach((b,i)=>{ const key=diffList[i]; const on=(key===pickDiff); b.style.outline= on?'2px solid rgba(255,255,255,.35)':''; });
+    }
+
+    wBody.appendChild(wRow('Mode', modeBtns));
+    wBody.appendChild(wRow('Difficulty', diffBtns));
+    wCard.appendChild(wTitle); wCard.appendChild(wBody); wCard.appendChild(startBtn);
+    wizard.appendChild(wCard);
+
+    function mountWizard(){
+      const host = overlayHost();
+      if (wizard.parentNode !== host) host.appendChild(wizard);
+    }
+    mountWizard();
+    document.addEventListener('fullscreenchange', mountWizard);
+
+    newGameBtn.addEventListener('click', ()=>{
+      mountWizard();
+      wizard.style.display='grid';
+      requestAnimationFrame(()=>{ wCard.style.transform='translateY(0)'; wCard.style.opacity='1'; setWizardActive(); });
+    });
+
+    // ---------------- Daily quests ----------------
+    // Simple pool; track progress keys in daily.progress
+    const QUEST_POOL = [
+      { key:'tiles',        label:'Clear 120 tiles',        target:120, kind:'counter' },
+      { key:'run4',         label:'Make a 4+ match',        target:1,   kind:'flag'    },
+      { key:'cascades',     label:'Trigger 5 cascades',     target:5,   kind:'counter' },
+      { key:'illegalMax',   label:'Finish ≤ 3 illegal',     target:3,   kind:'maxAtEnd'},
+      { key:'finishTimed',  label:'Finish a Timed run',     target:1,   kind:'flag'    },
+      { key:'score6k',      label:'Score 6000+',            target:6000,kind:'score'   },
+    ];
+    function todayId(){
+      // local midnight key
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    }
+    function rollDaily(){
+      const id = todayId();
+      if (daily && daily.id === id) return;
+      // pick 3 unique random quests
+      const pool = QUEST_POOL.slice();
+      shuffleInPlace(pool);
+      const quests = pool.slice(0,3);
+      const progress = { tiles:0, cascades:0, run4:false, illegalMax:true, finishTimed:false, score6k:false };
+      const streak = (daily && daily.completed) ? (daily.streak||0)+1 : (daily && daily.id===id ? (daily.streak||0) : (daily?.streak||0));
+      daily = { id, quests, progress, streak, completed:false };
+      saveJSON(KEY_DAILY, daily);
+    }
+    function renderDaily(){
+      dailyList.innerHTML = '';
+      if (!daily) rollDaily();
+      daily.quests.forEach(q=>{
+        const row = document.createElement('div');
+        Object.assign(row.style, { display:'grid', gridTemplateColumns:'1fr auto', alignItems:'center' });
+        const left = document.createElement('div'); left.textContent = q.label;
+        const right = document.createElement('div');
+        const done = isQuestDone(q);
+        right.textContent = done ? '✓' : questProgText(q);
+        right.style.opacity = done ? '1' : '.8';
+        row.style.opacity = done ? '1' : '.9';
+        row.style.textDecoration = done ? 'none' : 'none';
+        dailyList.appendChild(row);
+      });
+      dailyTitle.textContent = `Daily Quests · Streak: ${daily?.streak||0}`;
+    }
+    function questProgText(q){
+      const p = daily.progress;
+      if (q.kind==='counter') return `${Math.min(q.target, p[q.key]||0)}/${q.target}`;
+      if (q.kind==='flag') return (p[q.key] ? '✓' : '—');
+      if (q.kind==='maxAtEnd') return `≤ ${q.target}`;
+      if (q.kind==='score') return (p[q.key] ? '✓' : '—');
+      return '—';
+    }
+    function isQuestDone(q){
+      const p = daily.progress;
+      if (q.kind==='counter') return (p[q.key]||0) >= q.target;
+      if (q.kind==='flag')    return !!p[q.key];
+      if (q.kind==='maxAtEnd')return p[q.key]===true; // set at end if illegalTotal <= target
+      if (q.kind==='score')   return !!p[q.key];
+      return false;
+    }
+    function completeQuest(q){
+      if (!daily || isQuestDone(q)) return false;
+      // mark if flag; counters are handled by progress increments
+      if (q.kind==='flag') daily.progress[q.key] = true;
+      saveJSON(KEY_DAILY, daily);
+      confetti.burst({ count: 180 });
+      renderDaily();
+      // check all complete
+      if (daily.quests.every(isQuestDone)){
+        if (!daily.completed){
+          daily.completed = true; daily.streak = (daily.streak||0)+1; saveJSON(KEY_DAILY, daily);
+          confetti.burst({ count: 360 });
+          toast('Daily complete!');
+        }
+      }
+      return true;
+    }
+    function maybeUpdateDaily(what, val=0){
+      if (!daily) return;
+      if (what==='tiles'){ daily.progress.tiles = (daily.progress.tiles||0) + val; }
+      if (what==='cascades'){ daily.progress.cascades = Math.max(daily.progress.cascades||0, val); }
+      if (what==='run4'){ daily.progress.run4 = true; }
+      if (what==='illegal'){ /* handled at end for ≤ target */ }
+      if (what==='finishTimed'){ daily.progress.finishTimed = true; }
+      if (what==='score'){ daily.progress.score6k = (val>=6000); }
+      saveJSON(KEY_DAILY, daily);
+      // auto-complete counters/flags if reached
+      daily.quests.forEach(q=>{
+        if (q.kind==='counter' || q.kind==='flag' || q.kind==='score'){
+          if (isQuestDone(q)) completeQuest(q);
+        }
+      });
+      renderDaily();
+    }
+    dailyToggle.addEventListener('click', ()=>{
+      if (dailyList.style.display==='none'){ dailyList.style.display='grid'; dailyToggle.textContent='▼'; }
+      else { dailyList.style.display='none'; dailyToggle.textContent='▲'; }
+    });
+
+    // ---------------- Start / Restart ----------------
+    function applyPreset(d) {
       params.n = d.n;
       params.colors = Math.min(palette.length, d.colors);
       params.gameMode = d.mode;
@@ -1276,18 +1503,9 @@ export default {
       updateSubtitle();
     }
 
-    function setActiveChips() {
-      diffChips.forEach((b,i)=>{ const key=diffKeys[i];
-        const active = (key===cfg.difficulty);
-        b.style.outline = active ? '2px solid rgba(255,255,255,.35)' : '';
-        b.style.background = active ? 'linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.05))' : 'linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.03))';
-      });
-      modeChips.forEach((b,i)=>{ const key=modeKeys[i];
-        const active = (key===cfg.mode);
-        b.style.outline = active ? '2px solid rgba(255,255,255,.35)' : '';
-        b.style.background = active ? 'linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.05))' : 'linear-gradient(180deg, rgba(255,255,255,.08), rgba(255,255,255,.03))';
-      });
-      updateSubtitle();
+    function applyDifficulty() {
+      const d = DIFFS[cfg.difficulty] || DIFFS.medium;
+      applyPreset(d);
     }
 
     function layout() {
@@ -1296,11 +1514,29 @@ export default {
       const boardPx = Math.floor(Math.min(maxW, maxH) * 0.96);
       TILE = Math.max(38, Math.floor(boardPx / params.n));
       fitCanvas(canvas, params.n * TILE, params.n * TILE);
+      // resize confetti overlay
+      confetti.resize();
     }
     window.addEventListener('resize', layout);
 
+    function updateTimeMovesChip(){
+      if (params.gameMode === 'timed') {
+        timeMovesChip.lab.textContent = 'Time';
+        timeMovesChip.val.textContent = Math.max(0, Math.ceil(timeLeftMs/1000)).toString();
+      } else if (params.gameMode === 'moves') {
+        timeMovesChip.lab.textContent = 'Moves';
+        timeMovesChip.val.textContent = String(params.movesLeft ?? '—');
+      } else {
+        timeMovesChip.lab.textContent = 'Time';
+        timeMovesChip.val.textContent = '—';
+      }
+    }
+
     function start(fromUI=false){
       applyDifficulty();
+
+      // daily roll/update UI
+      rollDaily(); renderDaily();
 
       // seeded rng per start
       lastSeed = (Math.random()*0xffffffff)>>>0;
@@ -1311,10 +1547,10 @@ export default {
 
       nextId=1; score=0; setScore(0);
       timeWarning=false; canvas.style.transform=''; shakingActive=false;
-      selectPhase = 0; ghosts.length=0; idleMs=0; hintMove=null; invalidStreak=0;
-      inputLocked = false; enforcing=false;
+      selectPhase = 0; ghosts.length=0; idleMs=0; hintMove=null;
+      illegalStreak=0; illegalTotal=0;
+      tilesClearedThisRun=0; cascadesThisChain=0; sawRun4ThisRun=false;
 
-      setActiveChips();
       layout();
 
       // INIT: balanced, no 3s; spawn bags ready
@@ -1330,38 +1566,33 @@ export default {
       updateMoveCounter();
 
       if (!fromUI){ lastTick=now(); requestAnimationFrame(draw); }
+
+      // focus scores for daily "score 6000+" tracking
+      maybeUpdateDaily('score', score);
     }
 
-    // ---------------- Wire controls ----------------
-    diffChips.forEach((btn, i)=>{
-      btn.addEventListener('click', ()=>{
-        cfg.difficulty = diffKeys[i]; save('cfg', cfg);
-        toast(`Difficulty: ${btn.textContent}`); start(true);
-      });
-    });
-    modeChips.forEach((btn, i)=>{
-      // cosmetic
-      btn.addEventListener('click', ()=>{
-        cfg.mode = modeKeys[i]; save('cfg', cfg);
-        updateSubtitle(); updateTimeMovesChip();
-      });
-    });
-
-    function updateTimeMovesChip(){
-      if (params.gameMode === 'timed') {
-        timeMovesChip.lab.textContent = 'Time';
-        timeMovesChip.val.textContent = Math.max(0, Math.ceil(timeLeftMs/1000)).toString();
-      } else if (params.gameMode === 'moves') {
-        timeMovesChip.lab.textContent = 'Moves';
-        timeMovesChip.val.textContent = String(params.movesLeft ?? '—');
-      } else {
-        timeMovesChip.lab.textContent = 'Time';
-        timeMovesChip.val.textContent = '—';
+    function endAndFinalizeDaily(){
+      if (!daily) return;
+      // illegalMax at end
+      const q = daily.quests.find(q=>q.key==='illegalMax');
+      if (q){
+        daily.progress.illegalMax = (illegalTotal <= q.target);
       }
+      // score6k if needed
+      const q2 = daily.quests.find(q=>q.key==='score6k');
+      if (q2){
+        daily.progress.score6k = (score >= q2.target);
+      }
+      saveJSON(KEY_DAILY, daily);
+      daily.quests.forEach(completeQuest); // will ignore already-done
+      renderDaily();
     }
+
+    // New Game button also opens wizard
+    // already wired above (newGameBtn)
 
     // ---------------- Kick off ----------------
-    const hudPoly = makeHUD(api, { score: true, lives: false, meta: true }); void hudPoly;
+    const hudPoly = makeHUD(api, { score: true, lives: false, time: false }); void hudPoly;
     start();
 
     // ---------------- Public API ----------------
@@ -1374,13 +1605,19 @@ export default {
         window.removeEventListener('touchend', onUp);
         document.removeEventListener('fullscreenchange', mountOverlays);
         document.removeEventListener('fullscreenchange', mountRecap);
+        document.removeEventListener('fullscreenchange', mountWizard);
         canvas.style.transform='';
         const host = overlayHost();
         if (drawer.parentNode === host) host.removeChild(drawer);
         if (backdrop.parentNode === host) host.removeChild(backdrop);
         const rhost = recapHost();
         if (recap.parentNode === rhost) rhost.removeChild(recap);
+        if (wizard.parentNode === rhost) rhost.removeChild(wizard);
       }
     };
-  }
+
+    // ------------- local helpers at end -------------
+    function updateTimeLabel(){ /* kept if needed later */ }
+
+  } // launch
 };
