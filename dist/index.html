@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Arcade</title>
+  <link rel="icon" href="data:," />
+  <script type="module" crossorigin src="/assets/index-CE3VtbWk.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-HZClqpra.css">
+</head>
+<body>
+  <div id="app" class="page">
+    <header class="topbar">
+      <div class="brand">
+        <span class="dot"></span>
+        <span>Arcade</span>
+      </div>
+      <div class="top-actions">
+        <input id="search" placeholder="Search games…" aria-label="Search games" />
+        <!-- Dark-only: removed theme toggle -->
+        <!-- Simple All / Favorites filter -->
+        <div class="filters" role="group" aria-label="View filter">
+          <button class="filter-btn active" data-mode="all" id="filter-all" aria-pressed="true">All</button>
+          <button class="filter-btn" data-mode="favorites" id="filter-fav" aria-pressed="false">Favorites</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Removed the sub-tabs (Arcade/Puzzle/Logic/Art/Favorites/Recent) -->
+
+    <main id="gallery" class="gallery" aria-live="polite"></main>
+
+    <footer class="footer">
+      <span>Minimal Arcade</span>
+      <span class="sep">•</span>
+      <a href="#" id="resetProgress">Reset progress</a>
+    </footer>
+  </div>
+
+  <div id="overlay" class="overlay hidden" aria-hidden="true"></div>
+
+  <!-- Sudoku coach (if needed by your Sudoku game) -->
+  <script src="/src/games/sudoku/coach-stage.js"></script>
+  <script src="/src/games/sudoku/coach-script.js"></script>
+
+  <!-- keep main last -->
+</body>
+</html>
