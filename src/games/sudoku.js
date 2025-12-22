@@ -36,6 +36,10 @@ export default {
     const AUTO_ADV_IDLE_MS = 4000;
     const IDLE_AFTER_INTERACT_MS = 1500;
 
+    const HINT_WINDOW_MS = 60_000;
+    const MAX_HINTS_PER_WINDOW = 3;
+    const PEEK_COOLDOWN_MS = 30_000;
+
     // Wave step between neighboring cells in a unit celebration
     const WAVE_STEP_MS = 44;  // 36–60ms feels good; tweak to taste
 
@@ -72,7 +76,9 @@ export default {
 
       .sd-topbar{ display:flex; flex-direction:column; gap:8px; align-items:center; justify-content:center; }
       .sd-controls{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:center; max-width:100%; }
-      .sd-status{ text-align:center; font-size:12px; color:var(--muted); min-height:16px; }
+      .sd-status{ text-align:center; font-size:12px; color:var(--muted); min-height:16px; opacity:0; transition:opacity .3s ease; }
+      .sd-status.show{ opacity:1; }
+      .sd-status.cool{ color:var(--accentA); }
 
       .sd-btn, .sd-select{
         display:inline-flex; align-items:center; justify-content:center; gap:6px;
@@ -406,6 +412,9 @@ export default {
     let sel=null;
     let hotelDigit=null;
     let showSolutionHold=false;
+    let hintTimes=[];
+    let lastPeek=0;
+    let statusTimer=null;
 
     // errors
     const wrongFadeLocks = new Set();
@@ -844,7 +853,8 @@ export default {
 
       btnUndo.disabled = undoStack.length===0;
       btnRedo.disabled = redoStack.length===0;
-      btnHint.disabled = !(prefs.help.enabled && prefs.help.hints) || showSolutionHold;
+      const hintOk = hintReady();
+      btnHint.disabled = !(prefs.help.enabled && prefs.help.hints) || showSolutionHold || !hintOk;
 
       const showPlainTools = prefs.help.enabled && !prefs.help.mistakeFeedback && !showSolutionHold;
       btnCheck.style.display = showPlainTools ? '' : 'none';
@@ -1060,7 +1070,17 @@ export default {
       if((e.ctrlKey||e.metaKey) && !e.shiftKey && e.key.toLowerCase()==='z'){ e.preventDefault(); doUndo(); return; }
       if((e.ctrlKey||e.metaKey) && (e.key.toLowerCase()==='y' || (e.shiftKey && e.key.toLowerCase()==='z'))){ e.preventDefault(); doRedo(); return; }
 
-      if(e.key==='f' || e.key==='F'){ if(!showSolutionHold){ showSolutionHold=true; draw(); pingSfx('toggle'); coach.react('peek'); } }
+      if(e.key==='f' || e.key==='F'){
+        if(!showSolutionHold){
+          const now = Date.now();
+          if(now - lastPeek < PEEK_COOLDOWN_MS){
+            const wait = Math.ceil((PEEK_COOLDOWN_MS - (now - lastPeek))/1000);
+            announce(`Easy there—next peek in ${wait}s`);
+          } else {
+            showSolutionHold=true; lastPeek=now; draw(); pingSfx('toggle'); coach.react('peek');
+          }
+        }
+      }
 
       if(!sel) sel={r:0,c:0};
 
@@ -1264,9 +1284,20 @@ export default {
     document.addEventListener('visibilitychange', onVisibility);
 
     // ------------------------------- Hints ---------------------------------------
+    function hintReady(){
+      const now = Date.now();
+      hintTimes = hintTimes.filter(t => now - t < HINT_WINDOW_MS);
+      return hintTimes.length < MAX_HINTS_PER_WINDOW;
+    }
     function doHint(apply){
       if(!prefs.help.enabled || !prefs.help.hints || showSolutionHold) return null;
       if(isSolved()) return null;
+      if(!hintReady()){
+        const wait = Math.ceil((HINT_WINDOW_MS - (Date.now() - hintTimes[0]))/1000);
+        announce(`Take a breather—hints recharge in ${wait}s`);
+        return null;
+      }
+      hintTimes.push(Date.now());
       const rnd = makeRng(((currentSeed||0) ^ (Date.now()>>>0))>>>0);
 
       const indices=[...Array(N*N)].map((_,i)=>i);
@@ -1439,7 +1470,17 @@ export default {
       });
       return s;
     }
-    function setStatus(msg){ status.textContent = msg || ''; }
+    function setStatus(msg){
+      status.textContent = msg || '';
+      status.classList.toggle('show', !!msg);
+      if(!msg) status.classList.remove('cool');
+    }
+    function announce(msg){
+      setStatus(msg);
+      status.classList.add('cool');
+      clearTimeout(statusTimer);
+      statusTimer = setTimeout(()=> setStatus(''), 2000);
+    }
 
     // Plain-mode helpers
     function checkWrongCellsFlash(){
