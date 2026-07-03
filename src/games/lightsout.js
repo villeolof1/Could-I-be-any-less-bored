@@ -2,9 +2,9 @@
 // - Hints are solver-backed and wrap-aware (from a minimum-press solution when feasible).
 // - Autosolve truly presses tiles (not just highlight), at adjustable speed and with a per-day limit.
 // - Tunables up top (LIMITS + SOLVER): edit just these to change limits/effort.
-// - Clear hint visuals (bold ring + glow) with auto-scroll/focus; friendly toasts even in fullscreen.
+// - Clear hint visuals (bold ring + glow) with auto-scroll/focus; friendly toasts.
 // - Responsive square board with 1:1 scroll fallback on tiny screens.
-// - Minimal toolbar: New, Restart, Hint, Wrap | Moves/Timer | Auto, Fullscreen, Settings
+// - Minimal toolbar: New, Restart, Hint, Wrap | Moves/Timer | Auto, Settings
 
 import { makeConfetti, load, save } from '../kit/gamekit.js';
 
@@ -91,11 +91,10 @@ const movesBadge  = badge('Moves: 0');
 const timerBadge  = badge('⏱ 0.00s');
 centerBar.append(movesBadge, timerBadge);
 
-// Right — Auto / Fullscreen / Settings
+// Right — Auto / Settings
 const autoBtn     = pill('Auto', ()=> toggleAutoMenu());
-const fsBtn       = pill('Fullscreen', ()=> toggleFullscreen(), 'ghost');
 const settingsBtn = pill('Settings', ()=> openSettings(), 'ghost');
-rightBar.append(autoBtn, fsBtn, settingsBtn);
+rightBar.append(autoBtn, settingsBtn);
 
 // Auto popover
 const autoMenu = document.createElement('div');
@@ -782,13 +781,6 @@ function checkboxRow(label,checked){
   const lab=document.createElement('div'); lab.textContent=label; lab.style.fontWeight;'600';
   const c=document.createElement('input'); c.type='checkbox'; c.checked=!!checked;
   row.append(lab,c); return {row, input:c};
-}
-
-// ---------------- Fullscreen ----------------
-async function toggleFullscreen(){
-  try{ if (!document.fullscreenElement) await wrap.requestFullscreen(); else await document.exitFullscreen(); }catch{}
-  if (settingsOverlay.style.display==='grid'){ const host=document.fullscreenElement||wrap; if (settingsOverlay.parentElement!==host){ settingsOverlay.remove(); host.appendChild(settingsOverlay); } }
-  if (toast.parentElement!==(document.fullscreenElement||wrap)){ toast.remove(); (document.fullscreenElement||wrap).appendChild(toast); }
 }
 
 // ---------------- Window & init ----------------

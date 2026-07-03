@@ -23,8 +23,7 @@ let cfg = {
   w: 16, h: 16, mines: 40,  // NOTE: h is forced to equal w at runtime
 
   // Layout/sizing
-  tileSize: 30,             // actual tile size in px
-  tileSizeAuto: true,       // if true, auto-pick based on board
+  tileSize: 30,             // baseline "comfortable" size when we switch to minimap mode
   maxPanel: 980,
   panelPadding: 12,
 
@@ -36,7 +35,7 @@ let cfg = {
   // Visual + feel
   highContrast: true,
   colorBlind: false,
-  cellGapMin: 2,
+  cellGapMin: 1,
   cellGapMax: 18,
   longPressMS: 420,
 
@@ -47,7 +46,6 @@ let cfg = {
   daily: false
 };
 cfg = { ...cfg, ...(load('mines','settings',{}) || {}) };
-if (typeof cfg.tileSizeAuto !== 'boolean') cfg.tileSizeAuto = true;
 
 // ---------------- Run configuration (per-run) ------------------
 const DIFFICULTIES = {
@@ -68,7 +66,7 @@ const RUN_DEFAULT = {
   timeLimitMin: 20
 };
 
-let runCfg = { ...RUN_DEFAULT, ...(load('mines','runCfg',{}) || {}) };
+let runCfg = { ...RUN_DEFAULT };
 normalizeRunCfg(runCfg);
 
 // ---------------- State & DOM ----------------
@@ -403,27 +401,6 @@ Object.assign(runCard.style,{
 });
 runOverlay.appendChild(runCard);
 
-// End-of-run summary overlay
-const summaryOverlay = document.createElement('div');
-Object.assign(summaryOverlay.style,{
-  position:'absolute', inset:'0',
-  background:'rgba(0,0,0,.45)',
-  display:'none',
-  placeItems:'center',
-  zIndex:'1100'
-});
-const summaryCard = document.createElement('div');
-Object.assign(summaryCard.style,{
-  width:'min(420px, 92vw)',
-  background:'var(--card)', color:'var(--ink)',
-  border:'1px solid var(--ring)', borderRadius:'12px',
-  boxShadow:'var(--shadow)',
-  padding:'16px',
-  display:'grid',
-  gap:'8px'
-});
-summaryOverlay.appendChild(summaryCard);
-
 // Mount
 api.mount.appendChild(root);
 root.append(bar, rcBar, stage);
@@ -461,10 +438,6 @@ let auraScore = 0;      // 0–100
 let auraLocked = false;
 let lastCountdownSec = null;
 let timeExpiredShown = false;
-
-// Risk-tracking
-let riskyReveals = 0;
-let suppressRiskTrack = false;
 
 // Colors & numerals
 const ICON = {
@@ -507,14 +480,6 @@ function bestKey(){
 }
 function leaderboardKey(){ return `mines:lb:${bestKey()}`; }
 
-function smartTileSizeForBoard(n){
-  if (n <= 10) return 36;
-  if (n <= 14) return 32;
-  if (n <= 20) return 28;
-  if (n <= 26) return 24;
-  return 20;
-}
-
 const styleTag = document.createElement('style');
 styleTag.textContent = `
 [data-ms-inner]::-webkit-scrollbar{ width:8px; height:8px }
@@ -526,67 +491,101 @@ styleTag.textContent = `
 .badge{ background:var(--card-2, transparent) }
 .replay-ctrl .pill{ padding:.35rem .6rem }
 .pill:disabled{ opacity:.5; cursor:not-allowed }
-
-/* ===== PILL ACTIVE ===== */
-.pill.active {
-  background: var(--accent, #3b82f6);
-  color: #fff;
-  border-color: transparent;
-  box-shadow: 0 6px 14px rgba(0,0,0,.30);
-  transform: translateY(-1px);
-}
-.pill:not(.active):hover {
-  box-shadow: 0 4px 8px rgba(0,0,0,.25);
-  transform: translateY(-1px);
-}
-.pill.active:active {
-  transform: translateY(0);
-  box-shadow: 0 3px 8px rgba(0,0,0,.25);
-}
-
-/* ===== DISABLED SLIDER WRAPPER ===== */
-.slider-disabled {
-  opacity: 0.45;
-  pointer-events: none;
-}
-
-/* ===== SECTION CARD ===== */
-.run-card {
-  padding: 14px 18px;
-  margin: 10px 0;
-  border-radius: 12px;
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-}
-
-/* ===== AURA PREVIEW ANIMATION ===== */
-@keyframes auraFlash {
-  0%   { transform: translateY(0);   opacity: 1; }
-  30%  { transform: translateY(-5px); opacity: 0.75; }
-  100% { transform: translateY(0);   opacity: 1; }
-}
-.aura-refresh {
-  animation: auraFlash 220ms ease-out;
-}
+.pill.active{ background:var(--ring); color:var(--card); }
 `;
 document.head.appendChild(styleTag);
 inner.setAttribute('data-ms-inner','');
+
+
 
 // RNG (deterministic)
 function mulberry32(a){ return function(){ a|=0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a>>>15, 1 | a); t = t + Math.imul(t ^ t>>>7, 61 | t) ^ t; return ((t ^ t>>>14) >>> 0) / 4294967296; }; }
 function setSeed(s){ rng = mulberry32(s>>>0); }
 
 // ---------------- Layout (always square, uniform gap) ----------------
-const MIN_FIT_CELL = 18; // if fit would drop below this, use 1:1 scrolling
+const MIN_FIT_CELL = 18; // legacy baseline, now combined with dynamic threshold
+
 function enforceSquareDims(){ if (cfg.h !== cfg.w){ cfg.h = cfg.w; } }
+
+// Dynamic minimum visible cell size depending on board size + screen width
+function computeMinCellVisual(usable, n){
+  // Screen factor: narrower screens tolerate slightly smaller cells
+  const screenFactor = clamp(usable / 600, 0.7, 1.3); // ~600px => 1
+  // Density factor: many cells → allow smaller, few cells → want bigger
+  const densityFactor = clamp(8 / n, 0.6, 1.4);       // 8x8 baseline => 1
+  const base = 28; // sweet spot for mid-sized boards
+  const raw = base * screenFactor * densityFactor;
+  return clamp(Math.round(raw), 18, 36);
+}
+
+/**
+ * Choose cell size + gap so that:
+ * – The board uses essentially the full inner width (no tiny board in a big box).
+ * – Gaps shrink automatically when there are many tiles.
+ * – If fitting everything would make cells too small, we clamp to a pleasant size
+ *   and let scrollbars + minimap handle the overflow.
+ */
+function solveCellAndGaps(){
+  const usable = inner.clientWidth || wrap.clientWidth || 320;
+  const n = cfg.w || 1;
+  if (!n) return { S: cfg.tileSize, gap: 2 };
+
+  // Gap: base on screen width, then shrink for many tiles
+  const baseGap = clamp(Math.round(usable * 0.015), 2, 10);
+  const densityFactor = clamp(10 / n, 0.4, 1.4); // many tiles → smaller gap
+  let g = Math.round(baseGap * densityFactor);
+  g = clamp(g, cfg.cellGapMin, cfg.cellGapMax);
+
+  // First try: fit everything exactly
+  let S = Math.floor((usable - (n-1)*g) / n);
+
+  // If S goes into silly territory, fallback to our "scroll with minimap" mode
+  const minVisual = computeMinCellVisual(usable, n);
+  if (S < minVisual){
+    // Use preferred tile size, at least minVisual
+    const target = clamp(cfg.tileSize || 30, minVisual, 96);
+    S = target;
+    g = n>1 ? clamp(Math.floor(S * 0.12), cfg.cellGapMin, cfg.cellGapMax) : 0;
+    // In this mode, board is allowed to overflow inner → scroll + minimap own the UX.
+  }
+
+  // Safety: never go below hard minimum
+  if (S < MIN_FIT_CELL) S = MIN_FIT_CELL;
+
+  return { S, gap: g };
+}
+
 function layoutSquare(){
   enforceSquareDims();
   const container = api.mount || root.parentElement || document.body;
   const containerRect = container.getBoundingClientRect();
+  const rootRect = root.getBoundingClientRect();
   const containerWidth = Math.max(320, Math.floor(containerRect.width));
+
+  // Responsive layout for stage (board + minimap) and toolbar
+  if (containerWidth < 720) {
+    stage.style.gridTemplateColumns = '1fr';
+    stage.style.rowGap = '8px';
+    stage.style.alignItems = 'stretch';
+    stage.style.justifyItems = 'center';
+
+    bar.style.gridTemplateColumns = '1fr';
+    bar.style.rowGap = '6px';
+    bar.style.textAlign = 'center';
+  } else {
+    stage.style.gridTemplateColumns = '1fr auto';
+    stage.style.rowGap = '12px';
+    stage.style.alignItems = 'center';
+    stage.style.justifyItems = 'stretch';
+
+    bar.style.gridTemplateColumns = '1fr auto 1fr';
+    bar.style.rowGap = '0';
+    bar.style.textAlign = 'initial';
+  }
+
   const barH = Math.ceil(bar.getBoundingClientRect().height || 0) + Math.ceil(rcBar.getBoundingClientRect().height || 0);
-  const viewportH = window.innerHeight || document.documentElement.clientHeight || root.getBoundingClientRect().height;
-  const verticalRoom = Math.max(320, Math.floor(viewportH - root.getBoundingClientRect().top - barH - 48));
+  const viewportH = window.innerHeight || document.documentElement.clientHeight || rootRect.height;
+  const verticalRoom = Math.max(320, Math.floor(viewportH - rootRect.top - barH - 48));
   const side = clamp(Math.min(containerWidth*0.98, verticalRoom, cfg.maxPanel), 320, cfg.maxPanel);
 
   wrap.style.width = side+'px';
@@ -606,18 +605,7 @@ function layoutSquare(){
   computeDims();
   refreshMinimap();
 }
-function solveCellAndGaps(){
-  const usable = inner.clientWidth;
-  const n = cfg.w; // square grid
-  const gDesired = clamp(Math.round(usable * 0.012), cfg.cellGapMin, cfg.cellGapMax);
-  let g = n>1 ? gDesired : 0;
-  let S = Math.floor((usable - (n-1)*g) / n);
-  if (S < MIN_FIT_CELL){
-    S = clamp(cfg.tileSize || 24, 12, 96);
-    g = n>1 ? clamp(Math.floor(S*0.12), cfg.cellGapMin, cfg.cellGapMax) : 0;
-  }
-  return { S, gap: g };
-}
+
 function layoutGrid(){
   if (!board.children.length) return;
   const { S, gap } = solveCellAndGaps();
@@ -808,7 +796,6 @@ function initArrays(){
   state = Array.from({length:cfg.h},()=>Array(cfg.w).fill(0));
   flags=0; firstClick=true; alive=true; won=false; pressCell=null;
   penaltyMs=0; hintsUsed=0;
-  riskyReveals = 0;
   history=[]; if (!isReplaying) replay=[];
   rng=Math.random; gameSeed=null;
   stopTimer(); setTimer(0);
@@ -847,20 +834,19 @@ function inb(x,y){ return x>=0 && y>=0 && x<cfg.w && y<cfg.h; }
 function reveal(x,y,animate=false){
   if (!alive || paused || won) return;
   if (state[y][x]===2 || state[y][x]===3) return;
-
-  // Track risky clicks (ones not implied by pure logic)
-  if (!suppressRiskTrack && !isReplaying && !firstClick && state[y][x]===0){
-    const logicalMoves = findLogicalHints();
-    const isGuaranteed = logicalMoves.some(m => m.type==='reveal' && m.x===x && m.y===y);
-    if (!isGuaranteed){
-      riskyReveals++;
-    }
-  }
-
   if (firstClick){
-    if (pendingSeed!=null){ setSeed(pendingSeed); gameSeed=pendingSeed; }
-    else { gameSeed=(Math.random()*0xFFFFFFFF)>>>0; setSeed(gameSeed); }
+    if (pendingSeed != null) {
+      setSeed(pendingSeed);
+      gameSeed = pendingSeed;
+    } else {
+      gameSeed = (Math.random() * 0xFFFFFFFF) >>> 0;
+      setSeed(gameSeed);
+    }
     placeMines(x,y);
+
+    // One-shot replay/import seed: after using it once, go back to fresh randomness
+    pendingSeed = null;
+
     firstClick=false; startedAt=performance.now(); startTimer();
   }
   if (state[y][x]===1) return;
@@ -883,7 +869,6 @@ function reveal(x,y,animate=false){
     api.setNote('Boom. New run?');
     updateBadges();
     enableReplayIfAny();
-    showRunSummary(false);
     return;
   }
 
@@ -939,12 +924,9 @@ function chordAt(x,y,animate=false){
     api.setNote('Boom. New run?');
     updateBadges();
     enableReplayIfAny();
-    showRunSummary(false);
     return;
   }
-  suppressRiskTrack = true;
   for (const [rx,ry] of reveals) reveal(rx,ry,animate);
-  suppressRiskTrack = false;
 }
 function checkWin(){ for (let y=0;y<cfg.h;y++) for (let x=0;x<cfg.w;x++){ if (grid[y][x]!==-1 && state[y][x]!==1) return false; } return true; }
 function onWin(){
@@ -969,7 +951,6 @@ function onWin(){
   saveBest(elapsed);
   saveLeaderboard(elapsed);
   lastGameSeed=gameSeed; updateBadges(); enableReplayIfAny();
-  showRunSummary(true);
 }
 
 // ---------------- Timer ----------------
@@ -1040,101 +1021,11 @@ function updateAuraBadge(){
   const val = auraLocked ? 0 : clamp(Math.round(auraScore),0,100);
   auraBadge.textContent = `Aura: ${val}/100`;
 }
-
-function playerTitleFromRun({ win, auraVal, auraPot, hintsUsed, riskyReveals, wrongFlags, elapsedMs, timerMode, timeLimitMs }) {
-  // Normalize
-  auraVal = auraVal ?? 0;
-  auraPot = auraPot ?? 0;
-  hintsUsed = hintsUsed ?? 0;
-  riskyReveals = riskyReveals ?? 0;
-  wrongFlags = wrongFlags ?? 0;
-  elapsedMs = elapsedMs ?? 0;
-
-  const usedAura = auraPot > 0 ? (auraVal / Math.max(1, auraPot)) : 0;
-  const tookRisks = riskyReveals >= 5;
-  const sloppyFlags = wrongFlags >= 3;
-  const heavyHints = hintsUsed >= 5;
-  const veryFast = elapsedMs > 0 && elapsedMs < 90_000; // <1.5 min
-  const overtime = timerMode === 'limit' && timeLimitMs > 0 && elapsedMs > timeLimitMs;
-
-  // Top-tier
-  if (win && auraVal >= 95 && riskyReveals <= 1 && hintsUsed === 0 && !overtime) {
-    return 'Crystal-Clear Tactician';
-  }
-  // Very strong but a bit spicier
-  if (win && usedAura >= 0.85 && !heavyHints && !sloppyFlags && !overtime) {
-    return 'Master of Mines';
-  }
-  // Fast and bold
-  if (win && veryFast && tookRisks && !heavyHints) {
-    return 'Speedrunner Daredevil';
-  }
-  // Careful logic player
-  if (win && !tookRisks && !heavyHints && !sloppyFlags) {
-    return 'Cold-Logic Strategist';
-  }
-  // Hint-friendly but solid
-  if (win && heavyHints && !sloppyFlags) {
-    return 'Hint-Hugging Solver';
-  }
-  // Survived but aura took a hit
-  if (win && overtime) {
-    return 'Stubborn Survivor';
-  }
-
-  // Loss titles
-  if (!win && sloppyFlags && tookRisks) {
-    return 'Chaos Clicker';
-  }
-  if (!win && heavyHints && !sloppyFlags) {
-    return 'Overwhelmed Explorer';
-  }
-  if (!win && !heavyHints && !sloppyFlags && !tookRisks) {
-    return 'Cautious Challenger';
-  }
-  if (!win && overtime) {
-    return 'Out-of-Time Gambler';
-  }
-
-  // Default
-  return win ? 'Steady Solver' : 'Brave Beginner';
-}
-
-
 function auraTitle(score){
   if (score>=90) return 'Legendary run';
   if (score>=70) return 'Strong run';
   if (score>=40) return 'Solid run';
   return 'Shaky run';
-}
-
-function showAuraLoss(delta){
-  if (!delta || delta <= 0) return;
-  const el = document.createElement('div');
-  el.textContent = `-${Math.round(delta)} aura`;
-  Object.assign(el.style,{
-    position:'absolute',
-    right:'8px',
-    top:'-4px',
-    padding:'3px 8px',
-    borderRadius:'999px',
-    border:'1px solid rgba(248,113,113,0.85)',
-    background:'rgba(127,29,29,0.8)',
-    color:'#fee2e2',
-    fontSize:'12px',
-    fontWeight:'700',
-    pointerEvents:'none',
-    zIndex:'1000'
-  });
-  rightBar.appendChild(el);
-  el.animate(
-    [
-      { opacity:0, transform:'translateY(6px)' },
-      { opacity:1, transform:'translateY(-2px)' },
-      { opacity:0, transform:'translateY(-14px)' }
-    ],
-    { duration:700, easing:'ease-out' }
-  ).onfinish = ()=> el.remove();
 }
 
 function enableReplayIfAny(){
@@ -1236,7 +1127,6 @@ function openSettings(){
     cfg.chord        = !!chordRow.input.checked;
     cfg.questionMarks= !!qmRow.input.checked;
     cfg.tileSize     = Number(tileRow.input.value) || cfg.tileSize;
-    cfg.tileSizeAuto = false;
     cfg.longPressMS  = clamp(parseInt(lpInput.value)||cfg.longPressMS, 200, 2000);
     save('mines','settings',cfg);
     closeSettings();
@@ -1293,7 +1183,6 @@ function restart(){
   if (!settingsOverlay.parentElement) wrap.appendChild(settingsOverlay);
   if (!uploadOverlay.parentElement) wrap.appendChild(uploadOverlay);
   if (!runOverlay.parentElement) wrap.appendChild(runOverlay);
-  if (!summaryOverlay.parentElement) wrap.appendChild(summaryOverlay);
 
   if (isReplaying) rcBar.style.display='flex'; else rcBar.style.display='none';
   enableReplayIfAny();
@@ -1303,7 +1192,7 @@ function restart(){
 function pushHistory(){
   if (!cfg.allowUndo || isReplaying) return;
   const stateCopy = state.map(r=>r.slice());
-  history.push({ state:stateCopy, flags, firstClick, alive, won, startedAt, penaltyMs, gameSeed, hintsUsed, auraScore, auraLocked, riskyReveals });
+  history.push({ state:stateCopy, flags, firstClick, alive, won, startedAt, penaltyMs, gameSeed, hintsUsed, auraScore, auraLocked });
   if (history.length>64) history.shift();
 }
 function undo(){
@@ -1314,7 +1203,6 @@ function undo(){
   hintsUsed = h.hintsUsed ?? hintsUsed;
   auraScore = h.auraScore ?? auraScore;
   auraLocked= !!h.auraLocked;
-  riskyReveals = h.riskyReveals ?? riskyReveals;
   drawAll(); if (!alive || won) stopTimer(); else startTimer(); api.setNote('Undid last action'); updateBadges();
 }
 
@@ -1416,9 +1304,7 @@ function hint(){
   hintsUsed++;
 
   if (move.type === 'reveal'){
-    suppressRiskTrack = true;
     reveal(move.x, move.y, true);
-    suppressRiskTrack = false;
   } else if (move.type === 'flag'){
     setMark(move.x, move.y, 2, true);
   }
@@ -1467,7 +1353,10 @@ function beginReplaySession(autoplay){
   window.addEventListener('keydown', onReplayKey, { passive:true });
 }
 function endReplaySession(){
-  isReplaying=false; replayPlaying=false; cancelReplayRAF();
+  isReplaying=false;
+  replayPlaying=false;
+  cancelReplayRAF();
+  pendingSeed = null; // ensure future runs are fresh-random again
   window.removeEventListener('keydown', onReplayKey);
 }
 function onReplayKey(e){
@@ -1688,7 +1577,6 @@ function importReplay(b64){
         runCfg.mines=clamp(json.cfg.mines||cfg.mines,1,runCfg.size*runCfg.size-1);
       }
       normalizeRunCfg(runCfg);
-      save('mines','runCfg',runCfg);
     }
     cfg.w = runCfg.size; cfg.h=runCfg.size; cfg.mines=runCfg.mines; enforceSquareDims();
     replay=json.events.map(e=>({t:+e.t||0, type:String(e.k), x:+e.x, y:+e.y}));
@@ -1771,23 +1659,6 @@ function moveMiniFromEvent(e){
 }
 inner.addEventListener('scroll',()=>{ computeDims(); drawMinimapViewport(); },{ passive:true });
 
-// ---------------- Fullscreen ----------------
-async function toggleFullscreen(){
-  try{ if (!document.fullscreenElement) await wrap.requestFullscreen(); else await document.exitFullscreen(); }catch{}
-  if (settingsOverlay.style.display==='grid'){
-    const host=document.fullscreenElement||wrap;
-    if (settingsOverlay.parentElement!==host){ settingsOverlay.remove(); host.appendChild(settingsOverlay); }
-  }
-  if (runOverlay.style.display==='grid'){
-    const host=document.fullscreenElement||wrap;
-    if (runOverlay.parentElement!==host){ runOverlay.remove(); host.appendChild(runOverlay); }
-  }
-  if (summaryOverlay.style.display==='grid'){
-    const host=document.fullscreenElement||wrap;
-    if (summaryOverlay.parentElement!==host){ summaryOverlay.remove(); host.appendChild(summaryOverlay); }
-  }
-}
-
 // ---------------- Run configuration helpers ----------------
 function normalizeRunCfg(rc){
   if (!rc || typeof rc!=='object') rc = RUN_DEFAULT;
@@ -1808,89 +1679,25 @@ function normalizeRunCfg(rc){
     rc.timeLimitMin = clamp(rc.timeLimitMin||15,1,60);
   }
 }
-function computeAuraPotentialFromRunCfg(rc) {
-  const N = rc.size;
-  const M = rc.mines;
-  const cells = N * N;
-  const density = M / cells;
-
-  // ---------------------------
-  // SIZE SCORE (diminishing)
-  // ---------------------------
-  const sigmoid = x => x / (1 + Math.abs(x));
-  const sizeScore = 30 + 40 * sigmoid(cells / 200 - 1);  // ~30–70
-
-  // ---------------------------
-  // DENSITY SCORE (ideal 18%)
-  // ---------------------------
-  const ideal = 0.18;
-  const densityDiff = Math.abs(density - ideal);
-  const densityScore = Math.max(0, 20 - 60 * densityDiff);
-
-  // ---------------------------
-  // DIFFICULTY BASE
-  // ---------------------------
-  let diffBase = 0;
-  switch (rc.difficulty) {
-    case 'Basic':   diffBase = 0;  break;
-    case 'Easy':    diffBase = 5;  break;
-    case 'Average': diffBase = 10; break;
-    case 'Hard':    diffBase = 18; break;
-    case 'Pro':     diffBase = 25; break;
-    default:        diffBase = 8;  break; // Custom
-  }
-
-  // ---------------------------
-  // HINTS SCORE
-  // ---------------------------
-  let hintsScore = 0;
-  if (rc.hintsMode === 'off') {
-    hintsScore = 20;
-  } else if (rc.hintsMode === 'limited') {
-    const allowed = cells * 0.15;
-    const ratio = rc.hintsMax / Math.max(1, allowed);
-    hintsScore = 10 - 15 * Math.max(0, Math.min(1, ratio - 1));
-  } else {
-    hintsScore = -10; // unlimited
-  }
-
-  // ---------------------------
-  // TIMER SCORE
-  // ---------------------------
-  let timerScore = 0;
-  if (rc.timerMode === 'limit') timerScore = 15;
-
-  // ---------------------------
-  // FINAL
-  // ---------------------------
-  let potential = sizeScore + densityScore + diffBase + hintsScore + timerScore;
-  potential = Math.round(Math.max(10, Math.min(100, potential)));
-
-  // ---------------------------
-  // PRO = MUST BE 100 when default
-  // ---------------------------
-  if (rc.difficulty === 'Pro'
-      && rc.hintsMode === 'off'
-      && rc.timerMode === 'limit'
-      && rc.size === DIFFICULTIES.Pro.size
-      && rc.mines === DIFFICULTIES.Pro.mines) {
-    return 100;
-  }
-
-  return potential;
+function computeAuraPotentialFromRunCfg(rc){
+  const size = rc.size||16;
+  const mines= rc.mines||40;
+  const cells = size*size;
+  const density = mines / cells;
+  let base = 40 + Math.min(50, Math.round(cells/25)); // more tiles → more aura
+  base += Math.round((density-0.15)*160); // ~15% baseline
+  if (rc.hintsMode==='off') base += 12;
+  else if (rc.hintsMode==='unlimited') base -= 10;
+  if (rc.timerMode==='limit') base += 10;
+  return clamp(base,10,100);
 }
 function applyRunCfgToGame(){
   normalizeRunCfg(runCfg);
-  save('mines','runCfg',runCfg);
 
   cfg.w = runCfg.size;
   cfg.h = runCfg.size;
   cfg.mines = runCfg.mines;
   enforceSquareDims();
-
-  if (cfg.tileSizeAuto) {
-    cfg.tileSize = smartTileSizeForBoard(runCfg.size);
-  }
 
   hintsMode = runCfg.hintsMode;
   if (hintsMode==='off'){
@@ -1924,9 +1731,6 @@ function applyRunCfgToGame(){
 // Aura recomputation
 function recomputeAura(reason){
   if (auraLocked || auraPotential<=0) return;
-
-  const prev = clamp(Math.round(auraScore || auraPotential), 0, 100);
-
   const elapsed = getElapsedMs();
   let hintsFactor = 1;
   if (hintsMode==='limited' && isFinite(hintsAllowed) && hintsAllowed>0){
@@ -1948,13 +1752,6 @@ function recomputeAura(reason){
   const score = auraPotential * Math.max(0.1, hintsFactor) * Math.max(0.2, timeFactor);
   auraScore = clamp(score,0,100);
   updateAuraBadge();
-
-  if (reason === 'hint'){
-    const nowVal = clamp(Math.round(auraScore), 0, 100);
-    if (nowVal < prev){
-      showAuraLoss(prev - nowVal);
-    }
-  }
 }
 
 // ---------------- Run overlay (New run) ----------------
@@ -1995,8 +1792,9 @@ function openRunOverlay(mode){
       diffBtns.forEach(x=>x.classList.remove('active'));
       b.classList.add('active');
       draft.difficulty = name;
-      applyDifficultyToDraft(draft, name);
+      applyDifficultyToDraft(draft, name, sizeInput, minesInput, hintsModeRadios, hintsMaxInput, hintsNote);
       refreshAuraPreview();
+      refreshHelpLock();
     });
     diffRow.appendChild(b);
     return b;
@@ -2005,21 +1803,12 @@ function openRunOverlay(mode){
   // Board section
   const boardSection=document.createElement('div');
   Object.assign(boardSection.style,{display:'grid',gap:'6px',marginTop:'6px'});
-  boardSection.classList.add('run-card');
   const boardTitle=document.createElement('div'); boardTitle.textContent='Board'; boardTitle.style.fontWeight='700';
 
   const sizeInputRow = rangeRow('Size (N × N)', draft.size, 6, 40, 1, v=>`${v} × ${v}`);
   const sizeInput = sizeInputRow.input;
   const minesInputRow = rangeRow('Mines', draft.mines, 1, draft.size*draft.size-1, 1, v=>`${v}`);
   const minesInput = minesInputRow.input;
-
-  const sizeStatic = document.createElement('div');
-  sizeStatic.style.fontSize = '13px';
-  sizeStatic.style.opacity = '0.9';
-
-  const minesStatic = document.createElement('div');
-  minesStatic.style.fontSize = '13px';
-  minesStatic.style.opacity = '0.9';
 
   // tie mines slider max to size
   sizeInput.addEventListener('input',()=>{
@@ -2038,17 +1827,12 @@ function openRunOverlay(mode){
     refreshAuraPreview();
   });
 
-  boardSection.append(boardTitle, sizeStatic, minesStatic, sizeInputRow.row, minesInputRow.row);
+  boardSection.append(boardTitle, sizeInputRow.row, minesInputRow.row);
 
   // Help section (Hints)
   const helpSection=document.createElement('div');
   Object.assign(helpSection.style,{display:'grid',gap:'6px',marginTop:'4px'});
-  helpSection.classList.add('run-card');
   const helpTitle=document.createElement('div'); helpTitle.textContent='Help'; helpTitle.style.fontWeight='700';
-
-  const hintStatic = document.createElement('div');
-  hintStatic.style.fontSize = '13px';
-  hintStatic.style.opacity = '0.9';
 
   const hintsModeRow=document.createElement('div');
   Object.assign(hintsModeRow.style,{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'6px'});
@@ -2060,12 +1844,12 @@ function openRunOverlay(mode){
     btn.textContent=hintsModeLabels[modeVal];
     btn.dataset.mode=modeVal;
     btn.addEventListener('click',()=>{
-      if (draft.difficulty !== 'Custom') return;
+      if (hintsLockedByDifficulty(draft.difficulty)) return;
       hintsModeRadios.forEach(x=>x.classList.remove('active'));
       btn.classList.add('active');
       draft.hintsMode = modeVal;
-      refreshHelpLock();
       refreshAuraPreview();
+      refreshHelpLock();
     });
     hintsModeRow.appendChild(btn);
     return btn;
@@ -2082,12 +1866,11 @@ function openRunOverlay(mode){
   hintsNote.style.fontSize='12px';
   hintsNote.style.opacity='0.8';
 
-  helpSection.append(helpTitle, hintStatic, hintsModeRow, hintsMaxRow.row, hintsNote);
+  helpSection.append(helpTitle, hintsModeRow, hintsMaxRow.row, hintsNote);
 
   // Time section
   const timeSection=document.createElement('div');
   Object.assign(timeSection.style,{display:'grid',gap:'6px',marginTop:'4px'});
-  timeSection.classList.add('run-card');
   const timeTitle=document.createElement('div'); timeTitle.textContent='Time'; timeTitle.style.fontWeight='700';
 
   const timerModeRow=document.createElement('div');
@@ -2103,8 +1886,8 @@ function openRunOverlay(mode){
       timerModeBtns.forEach(x=>x.classList.remove('active'));
       btn.classList.add('active');
       draft.timerMode = modeVal;
-      refreshTimeLock();
       refreshAuraPreview();
+      refreshTimeLock();
     });
     timerModeRow.appendChild(btn);
     return btn;
@@ -2125,53 +1908,30 @@ function openRunOverlay(mode){
   auraPreview.style.fontSize='13px';
   auraPreview.style.opacity='0.9';
 
-  let lastAuraPreview = null;
   function refreshAuraPreview(){
-    const p = computeAuraPotentialFromRunCfg(draft);
-    auraPreview.textContent = `Aura potential: ${p}/100`;
-
-    if (lastAuraPreview !== null && p !== lastAuraPreview){
-      auraPreview.classList.remove('aura-refresh');
-      void auraPreview.offsetWidth; // reflow
-      auraPreview.classList.add('aura-refresh');
-    }
-    lastAuraPreview = p;
+    const potential = computeAuraPotentialFromRunCfg(draft);
+    auraPreview.textContent = `Aura potential: ${Math.round(potential)}/100 · More tiles + fewer hints + timer on = more aura`;
   }
 
-  function applyDifficultyToDraft(d, name){
+  // Apply difficulty preset to controls
+  function applyDifficultyToDraft(d, name, sizeInp, minesInp, hintsButtons, hintsMaxInp, noteEl){
     normalizeRunCfg(d);
-
     if (name!=='Custom' && DIFFICULTIES[name]){
       const def=DIFFICULTIES[name];
-      d.size      = def.size;
-      d.mines     = def.mines;
+      d.size = def.size;
+      d.mines= def.mines;
       d.hintsMode = def.hintsMode;
       d.hintsMax  = def.hintsMax;
       if (!d.timeLimitMin) d.timeLimitMin = def.timerLimitMin;
     }
+    sizeInp.value = String(d.size);
+    minesInp.max  = String(d.size*d.size-1);
+    minesInp.value= String(d.mines);
 
-    sizeInput.value = String(d.size);
-    minesInput.max  = String(d.size*d.size-1);
-    minesInput.value= String(d.mines);
-
-    if (name === 'Custom'){
-      sizeStatic.style.display = 'none';
-      minesStatic.style.display = 'none';
-      sizeInputRow.row.style.display = 'grid';
-      minesInputRow.row.style.display = 'grid';
-    } else {
-      sizeStatic.style.display = 'block';
-      minesStatic.style.display = 'block';
-      sizeStatic.textContent  = `Board: ${d.size} × ${d.size}`;
-      minesStatic.textContent = `Mines: ${d.mines}`;
-      sizeInputRow.row.style.display = 'none';
-      minesInputRow.row.style.display = 'none';
-    }
-
-    hintsModeRadios.forEach(btn=>{
+    hintsButtons.forEach(btn=>{
       btn.classList.toggle('active', btn.dataset.mode===d.hintsMode);
     });
-    hintsMaxInput.value = String(d.hintsMax);
+    hintsMaxInp.value = String(d.hintsMax);
 
     timeLimitInput.value = String(d.timeLimitMin);
 
@@ -2179,73 +1939,54 @@ function openRunOverlay(mode){
     refreshTimeLock();
   }
 
+  function hintsLockedByDifficulty(diff){
+    return diff!=='Custom';
+  }
   function refreshHelpLock(){
-    if (draft.difficulty === 'Pro'){
-      hintStatic.style.display = 'block';
-      hintStatic.textContent = 'Hints: Disabled';
-
-      hintsModeRow.style.display = 'none';
-      hintsMaxRow.row.style.display = 'none';
-
+    if (draft.difficulty==='Pro'){
+      // forced off
       hintsModeRadios.forEach(btn=>{
         btn.disabled = true;
-        btn.classList.toggle('active', btn.dataset.mode === 'off');
+        btn.classList.toggle('active', btn.dataset.mode==='off');
         btn.style.opacity='0.5';
       });
       hintsMaxInput.disabled = true;
       hintsMaxInput.style.opacity='0.5';
       hintsNote.textContent = 'Hints are disabled on Pro.';
-    } else if (draft.difficulty !== 'Custom'){
-      const def = DIFFICULTIES[draft.difficulty];
-
-      hintStatic.style.display = 'block';
-      hintStatic.textContent = `Hints: ${def.hintsMax} (limited)`;
-
-      hintsModeRow.style.display = 'none';
-      hintsMaxRow.row.style.display = 'none';
-
+    } else if (draft.difficulty!=='Custom'){
+      // limited, fixed limit
+      const def=DIFFICULTIES[draft.difficulty];
       hintsModeRadios.forEach(btn=>{
         btn.disabled = true;
-        btn.classList.toggle('active', btn.dataset.mode === 'limited');
+        btn.classList.toggle('active', btn.dataset.mode==='limited');
         btn.style.opacity='0.5';
       });
       hintsMaxInput.disabled = true;
       hintsMaxInput.style.opacity='0.5';
       hintsNote.textContent = `Hints limited to ${def.hintsMax} for this difficulty.`;
     } else {
-      hintStatic.style.display = 'none';
-      hintsModeRow.style.display = 'grid';
-
+      // fully editable
       hintsModeRadios.forEach(btn=>{
         btn.disabled = false;
         btn.style.opacity='1';
         btn.classList.toggle('active', btn.dataset.mode===draft.hintsMode);
       });
-
-      const limited = draft.hintsMode === 'limited';
-      hintsMaxRow.row.style.display = limited ? 'grid' : 'none';
-      hintsMaxInput.disabled = !limited;
-      hintsMaxInput.style.opacity = limited ? '1' : '0.6';
-
+      hintsMaxInput.disabled = (draft.hintsMode!=='limited');
+      hintsMaxInput.style.opacity = (draft.hintsMode==='limited')?'1':'0.6';
       hintsNote.textContent = '';
     }
   }
-
   function refreshTimeLock(){
     const limitOn = draft.timerMode==='limit';
     timeLimitInput.disabled = !limitOn;
     timeLimitInput.style.opacity = limitOn ? '1' : '0.6';
-
-    const rowEl = timeLimitRow.row;
-    if (limitOn) rowEl.classList.remove('slider-disabled');
-    else rowEl.classList.add('slider-disabled');
   }
 
   // Initial activation
   diffBtns.forEach(b=>{
     if (b.dataset.val===draft.difficulty) b.classList.add('active');
   });
-  applyDifficultyToDraft(draft, draft.difficulty);
+  applyDifficultyToDraft(draft, draft.difficulty, sizeInput, minesInput, hintsModeRadios, hintsMaxInput, hintsNote);
   timerModeBtns.forEach(btn=>{
     btn.classList.toggle('active', btn.dataset.mode===draft.timerMode);
   });
@@ -2267,13 +2008,11 @@ function openRunOverlay(mode){
 
   const cancelBtn = pill('Cancel', ()=> closeRunOverlay(), 'ghost');
   const startBtn  = pill('Start run', ()=>{
-    const sizeVal = clamp(Number(sizeInput.value)||draft.size,6,40);
-    const minesVal = clamp(Number(minesInput.value)||draft.mines,1,Math.pow(sizeVal,2)-1);
-
+    // commit draft → runCfg
     runCfg = {
       difficulty: draft.difficulty,
-      size: sizeVal,
-      mines: minesVal,
+      size: clamp(Number(sizeInput.value)||draft.size,6,40),
+      mines: clamp(Number(minesInput.value)||draft.mines,1,Math.pow(clamp(Number(sizeInput.value)||draft.size,6,40),2)-1),
       hintsMode: draft.difficulty==='Pro' ? 'off' :
                  (draft.difficulty!=='Custom' ? 'limited' : draft.hintsMode),
       hintsMax: draft.difficulty==='Pro'
@@ -2289,235 +2028,12 @@ function openRunOverlay(mode){
     restart();
   });
 
-  btnRow.append(modeLabel, ...(mode==='new' ? [cancelBtn] : []), startBtn);
+  btnRow.append(mode==='new'?modeLabel:modeLabel, mode==='new'?cancelBtn:null, startBtn);
   runCard.append(title, subtitle, diffLabel, diffRow, boardSection, helpSection, timeSection, auraPreview, btnRow);
 }
 function closeRunOverlay(){
   runOverlay.style.display='none';
 }
-
-// ---------------- Summary overlay ----------------
-function closeSummary(){
-  summaryOverlay.style.display = 'none';
-}
-
-function showRunSummary(win){
-  try{
-    summaryCard.innerHTML = '';
-
-    const elapsed = getElapsedMs();
-    const elapsedText = fmtTime(elapsed);
-    const auraVal = auraLocked ? 0 : clamp(Math.round(auraScore),0,100);
-    const auraPot = Math.round(auraPotential);
-
-    let rightFlags = 0, wrongFlags = 0;
-    for (let y=0;y<cfg.h;y++){
-      for (let x=0;x<cfg.w;x++){
-        if (state[y][x] === 2){
-          if (grid[y][x] === -1) rightFlags++;
-          else wrongFlags++;
-        }
-      }
-    }
-
-    const auraLoss = Math.max(0, auraPot - auraVal);
-
-    const playerTitle = playerTitleFromRun({
-      win,
-      auraVal,
-      auraPot,
-      hintsUsed,
-      riskyReveals,
-      wrongFlags,
-      elapsedMs: elapsed,
-      timerMode,
-      timeLimitMs
-    });
-
-    // --- Header ---
-    const header = document.createElement('div');
-    header.style.display = 'grid';
-    header.style.gridTemplateColumns = 'auto 1fr';
-    header.style.gap = '8px';
-    header.style.alignItems = 'center';
-
-    const icon = document.createElement('div');
-    icon.textContent = win ? '🏆' : '💥';
-    icon.style.fontSize = '26px';
-
-    const titleWrap = document.createElement('div');
-    const title = document.createElement('div');
-    title.textContent = win ? 'Run complete!' : 'Boom — run over';
-    title.style.fontSize = '18px';
-    title.style.fontWeight = '800';
-
-    const subtitle = document.createElement('div');
-    subtitle.style.fontSize = '13px';
-    subtitle.style.opacity = '0.8';
-    subtitle.textContent = win
-      ? 'Nice work. Here’s your Minesweeper persona this round:'
-      : 'Tough luck. Here’s who you were this run:';
-
-    const titleLine = document.createElement('div');
-    titleLine.style.marginTop = '4px';
-    titleLine.style.fontSize = '14px';
-    titleLine.style.fontWeight = '700';
-    titleLine.textContent = playerTitle;
-
-    titleWrap.append(title, subtitle, titleLine);
-    header.append(icon, titleWrap);
-
-    // --- Separator helper ---
-    const sep = () => {
-      const d = document.createElement('div');
-      d.style.height = '1px';
-      d.style.margin = '6px 0';
-      d.style.background = 'linear-gradient(90deg, transparent, rgba(255,255,255,0.25), transparent)';
-      return d;
-    };
-
-    // --- Stat sections ---
-    const sections = document.createElement('div');
-    sections.style.display = 'grid';
-    sections.style.gap = '8px';
-    sections.style.marginTop = '8px';
-    sections.style.fontSize = '13px';
-
-    function makeStatRow(label, value){
-      const row = document.createElement('div');
-      row.style.display = 'flex';
-      row.style.justifyContent = 'space-between';
-      row.style.gap = '8px';
-
-      const l = document.createElement('span');
-      l.textContent = label;
-      l.style.opacity = '0.8';
-
-      const v = document.createElement('span');
-      v.textContent = value;
-      v.style.fontWeight = '700';
-
-      row.append(l, v);
-      return row;
-    }
-
-    // Overall section
-    const overall = document.createElement('div');
-    overall.style.display = 'grid';
-    overall.style.gap = '4px';
-
-    const overallHeading = document.createElement('div');
-    overallHeading.textContent = 'Overview';
-    overallHeading.style.fontWeight = '700';
-    overallHeading.style.fontSize = '13px';
-
-    overall.append(
-      overallHeading,
-      makeStatRow('Result', win ? 'Clear' : 'Exploded'),
-      makeStatRow('Time', elapsedText),
-      makeStatRow('Mode', timerMode === 'limit'
-        ? `Timer (${(timeLimitMs/60000)|0} min)`
-        : 'Relaxed')
-    );
-
-    // Aura section
-    const auraSec = document.createElement('div');
-    auraSec.style.display = 'grid';
-    auraSec.style.gap = '4px';
-
-    const auraHeading = document.createElement('div');
-    auraHeading.textContent = 'Aura';
-    auraHeading.style.fontWeight = '700';
-    auraHeading.style.fontSize = '13px';
-
-    let auraLine = `${auraVal}/100`;
-    if (auraPot > 0) {
-      auraLine += ` (potential ${auraPot})`;
-      if (auraLoss > 0) auraLine += `  •  −${auraLoss}`;
-    }
-
-    auraSec.append(
-      auraHeading,
-      makeStatRow('Aura score', auraLine),
-      makeStatRow('Hints used', String(hintsUsed)),
-      makeStatRow('Risky reveals', String(riskyReveals))
-    );
-
-    // Board play section
-    const boardSec = document.createElement('div');
-    boardSec.style.display = 'grid';
-    boardSec.style.gap = '4px';
-
-    const boardHeading = document.createElement('div');
-    boardHeading.textContent = 'Board play';
-    boardHeading.style.fontWeight = '700';
-    boardHeading.style.fontSize = '13px';
-
-    boardSec.append(
-      boardHeading,
-      makeStatRow('Correct flags', String(rightFlags)),
-      makeStatRow('Wrong flags', String(wrongFlags)),
-      makeStatRow('Board size', `${cfg.w} × ${cfg.h}`),
-      makeStatRow('Mines', String(cfg.mines))
-    );
-
-    sections.append(
-      overall,
-      sep(),
-      auraSec,
-      sep(),
-      boardSec
-    );
-
-    // --- Buttons ---
-    const btnRow = document.createElement('div');
-    Object.assign(btnRow.style,{
-      display:'flex',
-      justifyContent:'flex-end',
-      gap:'8px',
-      marginTop:'12px',
-      flexWrap:'wrap'
-    });
-
-    const closeBtn  = pill('Close', ()=> closeSummary(), 'ghost');
-
-    const replayBtn = pill('Watch replay', ()=> {
-      closeSummary();
-      onReplayButton();
-    });
-
-    const shareBtn  = pill('Share replay', ()=> {
-      // Use existing share function so it works from summary as well
-      doCopyShare();
-    });
-
-    if (!replay.length){
-      // If somehow no replay, disable the replay/share buttons gracefully
-      replayBtn.disabled = true;
-      replayBtn.style.opacity = 0.5;
-      shareBtn.disabled = true;
-      shareBtn.style.opacity = 0.5;
-    }
-
-    btnRow.append(closeBtn, replayBtn, shareBtn);
-
-    summaryCard.append(header, sections, btnRow);
-    summaryOverlay.style.display = 'grid';
-
-    // Small "pop-in" animation for satisfaction
-    summaryCard.animate(
-      [
-        { transform:'translateY(8px) scale(0.96)', opacity:0 },
-        { transform:'translateY(0) scale(1)', opacity:1 }
-      ],
-      { duration:200, easing:'ease-out' }
-    );
-
-  } catch (e){
-    console.error('showRunSummary failed', e);
-  }
-}
-
 
 // ---------------- Window & init ----------------
 window.addEventListener('resize',()=>{ layoutSquare(); layoutGrid(); computeDims(); refreshMinimap(); });
@@ -2525,11 +2041,9 @@ window.addEventListener('resize',()=>{ layoutSquare(); layoutGrid(); computeDims
 wrap.appendChild(settingsOverlay);
 wrap.appendChild(uploadOverlay);
 wrap.appendChild(runOverlay);
-wrap.appendChild(summaryOverlay);
 
 // Initial run + overlay
 restart();
-openRunOverlay('first');
 
 return {
   pause(){ if (!paused) togglePause(); },

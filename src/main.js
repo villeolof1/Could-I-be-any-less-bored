@@ -1,11 +1,30 @@
-// Main shell: auto-discovers games in src/games via Vite's import.meta.glob
+// Main shell: explicit imports keep the gallery runnable even when served outside
+// Vite's import.meta.glob transform.
 import { createShell } from './shell.js';
+import game2048 from './games/2048.js';
+import kakuro from './games/kakuro.js';
+import lightsout from './games/lightsout.js';
+import match3 from './games/match3.js';
+import minesweeper from './games/minesweeper.js';
+import nonogram from './games/nonogram.js';
+import slide15 from './games/slide15.js';
+import sudoku from './games/sudoku.js';
+import wordle from './games/wordle.js';
 
 const galleryEl = document.getElementById('gallery');
 const overlayEl = document.getElementById('overlay');
 
-const globbed = import.meta.glob('./games/*.js', { eager: true });
-const games = Object.values(globbed).map(m => m.default).filter(Boolean);
+const games = [
+  game2048,
+  kakuro,
+  lightsout,
+  match3,
+  minesweeper,
+  nonogram,
+  slide15,
+  sudoku,
+  wordle,
+].filter(Boolean);
 
 // Base order (A–Z) used when no query
 games.sort((a, b) => a.title.localeCompare(b.title));

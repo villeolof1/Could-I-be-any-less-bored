@@ -474,20 +474,17 @@ export function makeSudokuCoach(opts){
     STEPS.push({
       id:'welcome',
       title: ()=> 'Welcome!',
-      body: ()=> 'Fullscreen gives you a clearer view. Optional, but nice.',
+      body: ()=> 'Pick a square and I’ll walk you through the basics.',
       hot: ()=> [controls, board],
       pointer: 'anchor',
-      pointerTo: ()=> (!document.fullscreenElement
-                        ? controls.querySelector('.sd-btn[title^="Toggle fullscreen"]') || controls
-                        : board),
+      pointerTo: ()=> board,
       onEnter: ()=>{
-        setGate(['fullscreen','noop','music','sfx']);
-        setMood(document.fullscreenElement?'happy':'think');
-        writeCard('Welcome!', 'Fullscreen gives you a clearer view. Optional, but nice.');
-        if(document.fullscreenElement){ advanceAfter(1200); }
-        else { advanceAfter(4800); }
+        setGate(['noop','music','sfx']);
+        setMood('think');
+        writeCard('Welcome!', 'Pick a square and I’ll walk you through the basics.');
+        advanceAfter(2200);
       },
-      goal: (k)=> (document.fullscreenElement ? (k==='noop'||k==='fullscreen') : k==='fullscreen')
+      goal: (k)=> k==='noop'
     });
 
     // S1 — Pick a cell (blank 4×4 sandbox)

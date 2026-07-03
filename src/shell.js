@@ -1,12 +1,20 @@
 export function createShell({ overlayEl, galleryEl, onToggleFavorite, isFavorite, getRating, setRating }) {
   let current = null;
 
+  function cleanupGlobalGameOverlays() {
+    document
+      .querySelectorAll('.coach-overlay, .sd-coach, .split-layer, .cs-slime-layer, .cs-goo, .cs-blob, #cs-goo-defs, .coach-countdown')
+      .forEach((el) => el.remove());
+  }
+
   function close() {
+    current?.dispose?.();
+    current = null;
+    cleanupGlobalGameOverlays();
     overlayEl.classList.add('hidden');
     overlayEl.setAttribute('aria-hidden', 'true');
     overlayEl.innerHTML = '';
-    current?.dispose?.();
-    current = null;
+    document.body.classList.remove('game-open');
   }
 
   // --- Toast helper (bottom-center)
@@ -35,6 +43,7 @@ export function createShell({ overlayEl, galleryEl, onToggleFavorite, isFavorite
     close(); // ensure clean
     overlayEl.classList.remove('hidden');
     overlayEl.removeAttribute('aria-hidden');
+    document.body.classList.add('game-open');
 
     const favOn = isFavorite?.(game.id);
     const myInitial = (getRating?.(game.id)) || 0;
@@ -65,7 +74,6 @@ export function createShell({ overlayEl, galleryEl, onToggleFavorite, isFavorite
           </button>
 
           <button class="ghost" id="pauseBtn">Pause</button>
-          <button class="ghost" id="fullBtn">Fullscreen</button>
         </div>
       </div>
       <div class="canvas-wrap" id="gameMount">
@@ -113,12 +121,6 @@ export function createShell({ overlayEl, galleryEl, onToggleFavorite, isFavorite
       } else {
         wrap.dataset.paused = '1'; ctx.pause();
       }
-    });
-
-    // Fullscreen
-    wrap.querySelector('#fullBtn').addEventListener('click', () => {
-      if (!document.fullscreenElement) wrap.requestFullscreen().catch(()=>{});
-      else document.exitFullscreen();
     });
 
     // Favorite in overlay

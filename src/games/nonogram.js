@@ -251,18 +251,6 @@ export default {
     bestChip.style.cssText = `font:500 12px ui-sans-serif,system-ui; opacity:.8;`;
     headerRight.appendChild(bestChip);
 
-    const fsBtn = document.createElement('button');
-    fsBtn.className='pill small alt';
-    fsBtn.textContent='⛶';
-    fsBtn.title='Toggle fullscreen';
-    fsBtn.onclick=async()=>{
-      try{
-        if(document.fullscreenElement) await document.exitFullscreen();
-        else await wrapper.requestFullscreen({navigationUI:'hide'});
-      }catch{}
-    };
-    headerRight.appendChild(fsBtn);
-
     const settingsBtn = document.createElement('button');
     settingsBtn.className='pill small alt';
     settingsBtn.textContent = '⚙ Settings';

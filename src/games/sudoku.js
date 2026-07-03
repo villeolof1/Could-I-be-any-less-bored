@@ -248,7 +248,6 @@ export default {
     const btnTutorial  = mkBtn('🎓','Tutorial','Show tutorial');
     const btnSfx       = mkBtn('🔊','SFX','Toggle sound effects');
     const btnMusic     = mkBtn('🎵','Music','Toggle music');
-    const btnFullscreen= mkBtn('⛶','Fullscreen','Toggle fullscreen'); btnFullscreen.dataset.coachFs='1';
     const setTutorialBtnLabel = (start)=>{ const l=btnTutorial.querySelector('span:last-child'); if(l) l.textContent = start ? 'Start tutorial' : 'Tutorial'; };
 
     // Help popover (closed by default)
@@ -261,7 +260,7 @@ export default {
       selDiff, selVariant,
       btnNew, btnDaily, btnStartOver,
       btnHint, btnUndo, btnRedo, btnCheck, btnEraseWrong,
-      btnTutorial, btnSfx, btnMusic, btnFullscreen, popWrap
+      btnTutorial, btnSfx, btnMusic, popWrap
     );
 
     const status = document.createElement('div'); status.className='sd-status'; status.setAttribute('aria-live','polite'); status.textContent='';
@@ -1185,13 +1184,6 @@ export default {
       music.setEnabled(prefs.audio.music);
       sfx.clickSoft(); coach.react('music');
     });
-    btnFullscreen.addEventListener('click', async ()=>{
-      try{
-        if(!document.fullscreenElement){ await wrap.requestFullscreen?.(); } else { await document.exitFullscreen?.(); }
-        coach.react('fullscreen');
-      }catch{}
-    });
-
     selDiff.addEventListener('change', ()=>{
       if(coach.isActive() && !coach.allow('diff')) { selDiff.value = difficulty; return; }
       difficulty = selDiff.value; prefs.difficulty = difficulty; save();

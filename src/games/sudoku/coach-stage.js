@@ -4,7 +4,7 @@
 // v12 highlights
 // - Simplified variant switching and puzzle generation without heavy animations.
 // - All legacy slime/goo/mosaic code removed + force-cleanup of any leftover artifacts.
-// - Tutorial in fullscreen works; strong locks during onboarding; candidates auto-size; countdown panic shakes screen.
+// - Tutorial adapts to the game frame; strong locks during onboarding; candidates auto-size; countdown panic shakes screen.
 //
 // ---------------------------------------------------------------------------
 let armAudio, enableTone, isArmed;
@@ -386,7 +386,7 @@ let armAudio, enableTone, isArmed;
 
     overlay.appendChild(root);
 
-    // ---------- Mount / fullscreen ----------
+    // ---------- Mount ----------
     const mountTo = options.mount || document.body;
     function attachToFullscreenContainerIfAny(){
       const parent = document.fullscreenElement || mountTo;
@@ -494,27 +494,14 @@ let armAudio, enableTone, isArmed;
     const btnNew       = mkBtn('🎲','New','New random puzzle','new');
     const btnHint      = mkBtn('💡','Hint','Smart hint','hint');
     const btnTutorial  = mkBtn('🎓','Tutorial','Show tutorial','tutorial');
-    const btnFullscreen= mkBtn('⛶','Fullscreen','Toggle fullscreen','fs');
     const btnMusic     = mkBtn('🎵','Music','Toggle music','music');
     const btnSettings  = mkBtn('⚙️','Help','Help & tutorial','settings');
-    controls.append(btnNew, btnHint, btnTutorial, btnFullscreen, btnMusic, btnSettings);
+    controls.append(btnNew, btnHint, btnTutorial, btnMusic, btnSettings);
 
     let musicOn=false;
     function reflectAudioButtons(){
       btnMusic.style.opacity = musicOn ? '1' : '0.65';
       btnMusic.firstChild.textContent = musicOn ? '🎵' : '🔕';
-    }
-
-    function inFullscreen(){ return !!document.fullscreenElement; }
-    async function toggleFullscreen(){
-      try{
-        if(!inFullscreen()){
-          const host = options.fullscreenHost || document.documentElement;
-          await host.requestFullscreen();
-        } else {
-          await document.exitFullscreen();
-        }
-      }catch{}
     }
 
     btnMusic.addEventListener('click', async ()=>{
@@ -542,8 +529,6 @@ let armAudio, enableTone, isArmed;
         say(`Couldn’t start audio. Try tapping the board first.`);
       }
     });
-
-    btnFullscreen.addEventListener('click', ()=>{ if(locks.toolbar) return; toggleFullscreen(); blip(150,.10); });
 
     btnNew.addEventListener('click', async ()=>{
       if(locks.toolbar) return;
@@ -942,9 +927,8 @@ let armAudio, enableTone, isArmed;
       hotel.querySelectorAll('.sd-hbtn').forEach(b=> b.disabled = locks.hotel);
       board.style.pointerEvents = locks.board ? 'none' : 'auto';
       board.style.filter = locks.board ? 'grayscale(0.25) brightness(0.9)' : '';
-      // Keep Tutorial and Fullscreen usable unless explicitly locked:
+      // Keep Tutorial usable unless explicitly locked:
       controlsMap['tutorial'].disabled = !!spec?.toolbar && !!spec?.lockTutorial;
-      controlsMap['fs'].disabled = !!spec?.toolbar && !!spec?.lockFullscreen;
     }
 
     // ---------- Keyboard ----------
@@ -1180,7 +1164,7 @@ let armAudio, enableTone, isArmed;
     }
 
     function enableTutorialLocks(){
-      setLocks({ toolbar:true, hotel:true, board:false, lockTutorial:false, lockFullscreen:false });
+      setLocks({ toolbar:true, hotel:true, board:false, lockTutorial:false });
       controlsMap['hint'].disabled = true;
       controlsMap['new'].disabled = true;
       controlsMap['music'].disabled = true;
