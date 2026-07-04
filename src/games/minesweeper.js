@@ -23,9 +23,9 @@ let cfg = {
   w: 16, h: 16, mines: 40,  // NOTE: h is forced to equal w at runtime
 
   // Layout/sizing
-  tileSize: 30,             // baseline "comfortable" size when we switch to minimap mode
-  maxPanel: 980,
-  panelPadding: 12,
+  tileSize: 42,             // baseline "comfortable" size when we switch to minimap mode
+  maxPanel: 840,
+  panelPadding: 18,
 
   // Gameplay preferences (apply to all runs)
   safeZero: true,
@@ -73,13 +73,14 @@ normalizeRunCfg(runCfg);
 const root = document.createElement('div');
 Object.assign(root.style,{
   width:'100%',
-  maxWidth:'min(98vw, 1200px)',
-  margin:'16px auto',
+  maxWidth:'min(96vw, 1500px)',
+  margin:'30px auto 22px',
   display:'grid',
-  gap:'12px',
+  gap:'26px',
   justifyItems:'center',
   boxSizing:'border-box'
 });
+root.className = 'mines-root';
 
 // Toolbar
 const bar = document.createElement('div');
@@ -87,10 +88,11 @@ Object.assign(bar.style,{
   display:'grid',
   gridTemplateColumns:'1fr auto 1fr',
   alignItems:'center',
-  gap:'8px',
+  gap:'16px',
   width:'100%',
   minWidth:0
 });
+bar.className = 'mines-toolbar';
 const leftBar   = hstack('start');
 const centerBar = hstack('center');
 const rightBar  = hstack('end');
@@ -189,6 +191,7 @@ Object.assign(stage.style,{
   display:'grid',
   gridTemplateColumns:'1fr auto',
   alignItems:'center',
+  justifyItems:'center',
   gap:'12px'
 });
 
@@ -198,14 +201,16 @@ Object.assign(wrap.style,{
   position:'relative',
   width:'min(96vw, 1000px)',
   aspectRatio:'1 / 1',
-  background:'var(--card)',
-  border:'1px solid var(--ring)',
+  background:'linear-gradient(180deg, rgba(22,31,49,.82), rgba(13,20,34,.82))',
+  border:'1px solid rgba(131,153,194,.26)',
   borderRadius:'12px',
-  boxShadow:'var(--shadow)',
+  boxShadow:'0 26px 80px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.05)',
   overflow:'hidden',
   display:'grid',
-  placeItems:'center'
+  placeItems:'center',
+  backdropFilter:'blur(10px)'
 });
+wrap.className = 'mines-board-frame';
 
 const killContext = e => { if (wrap.contains(e.target)) e.preventDefault(); };
 document.addEventListener('contextmenu', killContext);
@@ -220,8 +225,10 @@ Object.assign(inner.style,{
   placeItems:'center',
   boxSizing:'border-box',
   overflow:'auto',
-  overscrollBehavior:'contain'
+  overscrollBehavior:'contain',
+  scrollbarWidth:'none'
 });
+inner.className = 'mines-board-scroll';
 wrap.appendChild(inner);
 
 // Board
@@ -231,6 +238,7 @@ Object.assign(board.style,{
   touchAction:'manipulation',
   boxSizing:'border-box'
 });
+board.className = 'mines-board';
 inner.appendChild(board);
 
 // Delegated board input (attach once)
@@ -238,6 +246,8 @@ board.addEventListener('pointerdown', onPointerDown, true);
 board.addEventListener('pointerup', onPointerUp, true);
 board.addEventListener('pointercancel', resetPress, true);
 board.addEventListener('pointerleave', resetPress, true);
+board.addEventListener('pointerover', onBoardPointerOver, true);
+board.addEventListener('pointerout', onBoardPointerOut, true);
 board.addEventListener('contextmenu', e=>{
   const cell = e.target.closest('.ms-cell');
   if (!cell || !alive || paused || won) return;
@@ -321,6 +331,7 @@ Object.assign(mmWrap.style,{
 const mmCanvas = document.createElement('canvas');
 mmCanvas.width = 140; mmCanvas.height = 98;
 mmCanvas.style.width='100%'; mmCanvas.style.height='100%'; mmCanvas.style.display='block';
+const mmCtx = mmCanvas.getContext('2d');
 mmWrap.appendChild(mmCanvas);
 const mmViewport = document.createElement('div');
 Object.assign(mmViewport.style,{
@@ -334,46 +345,23 @@ mmWrap.appendChild(mmViewport);
 
 // Settings (preferences; non-destructive)
 const settingsOverlay = document.createElement('div');
-Object.assign(settingsOverlay.style,{
-  position:'absolute', inset:'0',
-  background:'rgba(0,0,0,.45)',
-  display:'none',
-  placeItems:'center',
-  zIndex:'1000'
-});
+applyModalOverlayStyle(settingsOverlay);
 const settingsCard = document.createElement('div');
-Object.assign(settingsCard.style,{
-  width:'min(640px, 92vw)',
-  background:'var(--card)', color:'var(--ink)',
-  border:'1px solid var(--ring)', borderRadius:'12px',
-  boxShadow:'var(--shadow)',
-  padding:'16px', maxHeight:'85vh', overflow:'auto'
-});
+applyModalCardStyle(settingsCard, '640px');
 settingsOverlay.appendChild(settingsCard);
 
 // Upload (paste or file)
 const uploadOverlay = document.createElement('div');
-Object.assign(uploadOverlay.style,{
-  position:'absolute', inset:'0',
-  background:'rgba(0,0,0,.45)',
-  display:'none',
-  placeItems:'center',
-  zIndex:'1000'
-});
+applyModalOverlayStyle(uploadOverlay);
 const uploadCard = document.createElement('div');
-Object.assign(uploadCard.style,{
-  width:'min(560px, 92vw)',
-  background:'var(--card)', color:'var(--ink)',
-  border:'1px solid var(--ring)', borderRadius:'12px',
-  boxShadow:'var(--shadow)',
-  padding:'16px', maxHeight:'75vh', overflow:'auto', display:'grid', gap:'10px'
-});
+applyModalCardStyle(uploadCard, '560px');
+Object.assign(uploadCard.style,{ display:'grid', gap:'10px' });
 const upTitle = document.createElement('div'); upTitle.textContent='Import Replay'; upTitle.style.fontWeight='800';
 const pasteArea = document.createElement('textarea');
 Object.assign(pasteArea.style,{ width:'100%', height:'120px', border:'1px solid var(--ring)', borderRadius:'8px', padding:'8px', background:'var(--card)'});
 pasteArea.placeholder = 'Paste replay link, base64, or JSON…';
 const fileInput = document.createElement('input'); fileInput.type='file'; fileInput.accept='.minesreplay,.txt,application/json,text/plain';
-const upBtns = document.createElement('div'); Object.assign(upBtns.style,{ display:'flex', justifyContent:'flex-end', gap:'8px' });
+const upBtns = document.createElement('div'); Object.assign(upBtns.style,{ display:'flex', justifyContent:'flex-end', gap:'8px', flexWrap:'wrap' });
 const upCancel = pill('Cancel', ()=> closeUpload(), 'ghost');
 const upImport = pill('Import', ()=> { const s=pasteArea.value.trim(); if(s) importReplaySmart(s); });
 fileInput.addEventListener('change', async ()=>{ const f=fileInput.files?.[0]; if(!f) return; const txt=await f.text(); importReplaySmart(txt); });
@@ -383,22 +371,11 @@ uploadOverlay.append(uploadCard);
 
 // Run Setup overlay (New run)
 const runOverlay = document.createElement('div');
-Object.assign(runOverlay.style,{
-  position:'absolute', inset:'0',
-  background:'rgba(0,0,0,.45)',
-  display:'none',
-  placeItems:'center',
-  zIndex:'1000'
-});
+applyModalOverlayStyle(runOverlay);
 const runCard = document.createElement('div');
-Object.assign(runCard.style,{
-  width:'min(680px, 94vw)',
-  background:'var(--card)', color:'var(--ink)',
-  border:'1px solid var(--ring)', borderRadius:'12px',
-  boxShadow:'var(--shadow)',
-  padding:'18px', maxHeight:'85vh', overflow:'auto',
-  display:'grid', gap:'12px'
-});
+applyModalCardStyle(runCard, '680px', '18px');
+Object.assign(runCard.style,{ display:'grid', gap:'12px' });
+runCard.dataset.modal = 'mines-run';
 runOverlay.appendChild(runCard);
 
 // Mount
@@ -464,13 +441,51 @@ const ICON = {
     </svg>`;
   }
 };
-const NUMC = { 1:'#2196f3', 2:'#43a047', 3:'#e53935', 4:'#3949ab', 5:'#6d4c41', 6:'#00897b', 7:'#000000', 8:'#616161' };
+const NUMC = { 1:'#37a7ff', 2:'#55d46a', 3:'#ff5d5d', 4:'#6f8dff', 5:'#ffb15c', 6:'#61e0dc', 7:'#d7e4ff', 8:'#9fb0d0' };
 const GLYPH = {1:'▲',2:'●',3:'■',4:'◆',5:'★',6:'●●',7:'▲▲',8:'■■' };
 
 // ---------------- Helpers & styles ----------------
 function hstack(j='start'){ const x=document.createElement('div'); x.style.display='flex'; x.style.flexWrap='wrap'; x.style.gap='8px'; x.style.justifyContent=j; x.style.alignItems='center'; return x; }
 function pill(label, onClick, kind=''){ const b=document.createElement('button'); b.textContent=label; b.className=kind?'pill '+kind:'pill'; b.style.whiteSpace='nowrap'; b.addEventListener('click', onClick); return b; }
 function badge(text){ const s=document.createElement('span'); s.textContent=text; s.className='badge'; Object.assign(s.style,{padding:'6px 10px', border:'1px solid var(--ring)', borderRadius:'999px', fontWeight:'700', whiteSpace:'nowrap'}); return s; }
+function applyModalOverlayStyle(overlay){
+  overlay.classList.add('mines-modal-overlay');
+  Object.assign(overlay.style,{
+    position:'absolute',
+    inset:'0',
+    background:'rgba(0,0,0,.45)',
+    display:'none',
+    justifyItems:'center',
+    alignItems:'start',
+    zIndex:'2000',
+    boxSizing:'border-box',
+    padding:'16px',
+    overflow:'auto',
+    overflowX:'hidden'
+  });
+}
+function applyModalCardStyle(card, maxWidth, padding='16px'){
+  card.classList.add('mines-modal-card');
+  Object.assign(card.style,{
+    width:`min(${maxWidth}, 100%)`,
+    background:'var(--card)',
+    color:'var(--ink)',
+    border:'1px solid var(--ring)',
+    borderRadius:'12px',
+    boxShadow:'var(--shadow)',
+    padding,
+    maxHeight:'min(calc(100dvh - 120px), calc(100% - 32px))',
+    overflow:'auto',
+    boxSizing:'border-box',
+    margin:'auto 0'
+  });
+}
+function modalHost(){ return api.mount || root.parentElement || wrap; }
+function showModalOverlay(overlay){
+  const host=modalHost();
+  if (overlay.parentElement!==host){ overlay.remove(); host.appendChild(overlay); }
+  overlay.style.display='grid';
+}
 function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 function fmtTime(ms){ return (ms/1000).toFixed(2)+'s'; }
 function boost(hex, f){ try{ const c=parseInt(hex.slice(1),16); let r=(c>>16)&255,g=(c>>8)&255,b=c&255; r=clamp(Math.floor(r*f),0,255); g=clamp(Math.floor(g*f),0,255); b=clamp(Math.floor(b*f),0,255); return `#${((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1)}`; }catch{ return hex; } }
@@ -486,12 +501,62 @@ styleTag.textContent = `
 [data-ms-inner]::-webkit-scrollbar-thumb{ background:var(--ring); border-radius:99px }
 [data-ms-inner]::-webkit-scrollbar-track{ background:transparent }
 [data-ms-inner]{ scrollbar-width:thin; scrollbar-color:var(--ring) transparent }
-.pill{ padding:.5rem .75rem; border-radius:999px; border:1px solid var(--ring); background:var(--card); color:var(--ink); font-weight:700 }
-.pill.ghost{ background:transparent }
-.badge{ background:var(--card-2, transparent) }
+.mines-board-scroll::-webkit-scrollbar{ width:0; height:0 }
+.mines-root .pill,
+.mines-root .badge{
+  min-height:42px;
+  padding:.58rem 1rem;
+  border-radius:12px;
+  border:1px solid rgba(129,153,196,.24);
+  background:rgba(12,22,39,.78);
+  color:#f4f7ff;
+  font-weight:800;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 8px 22px rgba(0,0,0,.16);
+  backdrop-filter:blur(10px);
+}
+.mines-root .pill.ghost{ background:rgba(12,22,39,.54) }
+.mines-root .pill:not(:disabled):hover{
+  border-color:rgba(106,166,255,.46);
+  background:rgba(20,35,60,.88);
+}
+.mines-modal-card .pill{ border-color:rgba(106,166,255,.55); background:#1f65d6; color:#fff; box-shadow:0 6px 18px rgba(31,101,214,.24) }
+.mines-modal-card .pill.ghost{ background:rgba(106,166,255,.12); color:#dce9ff; box-shadow:none }
+.mines-modal-card .pill.active{ background:var(--brand); color:#06111f; border-color:transparent }
+.mines-modal-card .pill:disabled{ background:rgba(255,255,255,.08); color:rgba(233,236,241,.45); border-color:var(--ring); box-shadow:none }
+.mines-root .badge{ background:rgba(12,22,39,.72) }
 .replay-ctrl .pill{ padding:.35rem .6rem }
 .pill:disabled{ opacity:.5; cursor:not-allowed }
 .pill.active{ background:var(--ring); color:var(--card); }
+.mines-board .ms-cell{
+  border:1px solid #2a334f;
+  background:#121726;
+  display:grid;
+  place-items:center;
+  font-weight:900;
+  cursor:pointer;
+  user-select:none;
+  transition:transform .06s ease, background-color .12s ease, box-shadow .12s ease, border-color .12s ease;
+  padding:0;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.035);
+  box-sizing:border-box;
+  line-height:1;
+  text-shadow:none;
+}
+.mines-board .ms-cell.is-hovered{
+  box-shadow:inset 0 0 0 2px rgba(255,255,255,.14);
+}
+.mines-board .ms-cell.is-flagged{
+  border-color:#e6b24f;
+  color:#ffd476;
+}
+.mines-board .ms-cell.is-question{
+  border-color:#6b7899;
+  color:#9daccc;
+}
+.mines-board .ms-cell.is-mine{
+  border-color:#d14545;
+  color:#f5f7ff;
+}
 `;
 document.head.appendChild(styleTag);
 inner.setAttribute('data-ms-inner','');
@@ -503,19 +568,17 @@ function mulberry32(a){ return function(){ a|=0; a = a + 0x6D2B79F5 | 0; let t =
 function setSeed(s){ rng = mulberry32(s>>>0); }
 
 // ---------------- Layout (always square, uniform gap) ----------------
-const MIN_FIT_CELL = 18; // legacy baseline, now combined with dynamic threshold
+const MIN_FIT_CELL = 18; // absolute safety floor only
+const MIN_SCROLL_CELL = 34; // dense boards should pan instead of shrinking below this
 
 function enforceSquareDims(){ if (cfg.h !== cfg.w){ cfg.h = cfg.w; } }
 
 // Dynamic minimum visible cell size depending on board size + screen width
 function computeMinCellVisual(usable, n){
   // Screen factor: narrower screens tolerate slightly smaller cells
-  const screenFactor = clamp(usable / 600, 0.7, 1.3); // ~600px => 1
+  const screenFloor = n >= 30 ? 34 : n >= 24 ? 32 : n >= 18 ? 28 : 18;
   // Density factor: many cells → allow smaller, few cells → want bigger
-  const densityFactor = clamp(8 / n, 0.6, 1.4);       // 8x8 baseline => 1
-  const base = 28; // sweet spot for mid-sized boards
-  const raw = base * screenFactor * densityFactor;
-  return clamp(Math.round(raw), 18, 36);
+  return screenFloor;
 }
 
 /**
@@ -543,7 +606,8 @@ function solveCellAndGaps(){
   const minVisual = computeMinCellVisual(usable, n);
   if (S < minVisual){
     // Use preferred tile size, at least minVisual
-    const target = clamp(cfg.tileSize || 30, minVisual, 96);
+    const preferred = Math.max(cfg.tileSize || MIN_SCROLL_CELL, MIN_SCROLL_CELL);
+    const target = clamp(preferred, minVisual, 96);
     S = target;
     g = n>1 ? clamp(Math.floor(S * 0.12), cfg.cellGapMin, cfg.cellGapMax) : 0;
     // In this mode, board is allowed to overflow inner → scroll + minimap own the UX.
@@ -572,15 +636,27 @@ function layoutSquare(){
     bar.style.gridTemplateColumns = '1fr';
     bar.style.rowGap = '6px';
     bar.style.textAlign = 'center';
+    leftBar.style.justifyContent = 'center';
+    centerBar.style.justifyContent = 'center';
+    rightBar.style.justifyContent = 'center';
+    leftBar.style.width = '100%';
+    centerBar.style.width = '100%';
+    rightBar.style.width = '100%';
   } else {
     stage.style.gridTemplateColumns = '1fr auto';
     stage.style.rowGap = '12px';
     stage.style.alignItems = 'center';
-    stage.style.justifyItems = 'stretch';
+    stage.style.justifyItems = 'center';
 
     bar.style.gridTemplateColumns = '1fr auto 1fr';
     bar.style.rowGap = '0';
     bar.style.textAlign = 'initial';
+    leftBar.style.justifyContent = 'start';
+    centerBar.style.justifyContent = 'center';
+    rightBar.style.justifyContent = 'end';
+    leftBar.style.width = '';
+    centerBar.style.width = '';
+    rightBar.style.width = '';
   }
 
   const barH = Math.ceil(bar.getBoundingClientRect().height || 0) + Math.ceil(rcBar.getBoundingClientRect().height || 0);
@@ -645,7 +721,7 @@ function computeDims(){
 
 // ---------------- Colors ----------------
 function hiddenBg(){ return cfg.highContrast ? '#0a1020' : '#121726'; }
-function hiddenBorder(){ return cfg.highContrast ? '#1e2a4a' : '#2a334f'; }
+function hiddenBorder(){ return cfg.highContrast ? '#2e4d86' : '#27406c'; }
 function revealedBg(){ return cfg.highContrast ? '#1b2a4a' : '#18223b'; }
 function flaggedBg(){ return cfg.highContrast ? '#14243f' : '#1a2438'; }
 
@@ -655,37 +731,19 @@ function buildBoard(){
   if (!confetti){
     confetti = makeConfetti(confettiCv, { duration:6, linger:0.4, count:300, devicePixelRatioAware:true });
   }
+  const frag = document.createDocumentFragment();
   for (let y=0;y<cfg.h;y++){
     for (let x=0;x<cfg.w;x++){
       const d=document.createElement('div');
       d.className='ms-cell';
       Object.assign(d.style,{
-        border:`1px solid ${hiddenBorder()}`,
-        background:hiddenBg(),
-        display:'grid',
-        placeItems:'center',
-        fontWeight:'900',
-        cursor:'pointer',
-        userSelect:'none',
-        transition:'transform .06s ease, background .12s ease, box-shadow .12s ease, border-color .12s ease',
-        padding:'0',
-        boxShadow:'0 1px 0 rgba(255,255,255,.03) inset',
-        boxSizing:'border-box',
         fontSize:`${textPx}px`,
-        lineHeight:'1'
       });
       d.dataset.x=x; d.dataset.y=y;
-      d.addEventListener('mouseenter', ()=>{
-        hoverCell = { x, y };
-        d.style.boxShadow='0 0 0 3px rgba(255,255,255,.16) inset';
-      });
-      d.addEventListener('mouseleave', ()=>{
-        if (hoverCell && hoverCell.x===x && hoverCell.y===y) hoverCell = null;
-        d.style.boxShadow='0 1px 0 rgba(255,255,255,.03) inset';
-      });
-      board.appendChild(d);
+      frag.appendChild(d);
     }
   }
+  board.appendChild(frag);
 
   layoutSquare();
   drawAll();
@@ -695,6 +753,33 @@ function buildBoard(){
 // ---------------- Input ----------------
 let pressCell=null, longPressT=null, longPressFor=null;
 let hoverCell = null; // last hovered cell for Space = right-click
+let hoverEl = null;
+
+function setHoverCell(el){
+  if (hoverEl === el) return;
+  hoverEl?.classList.remove('is-hovered');
+  hoverEl = el;
+  if (hoverEl){
+    hoverEl.classList.add('is-hovered');
+    hoverCell = { x:+hoverEl.dataset.x, y:+hoverEl.dataset.y };
+  } else {
+    hoverCell = null;
+  }
+}
+function onBoardPointerOver(e){
+  const cell = e.target.closest('.ms-cell');
+  if (!cell || !board.contains(cell)) return;
+  setHoverCell(cell);
+}
+function onBoardPointerOut(e){
+  if (!hoverEl) return;
+  const next = e.relatedTarget?.closest?.('.ms-cell');
+  if (next && board.contains(next)){
+    setHoverCell(next);
+    return;
+  }
+  setHoverCell(null);
+}
 
 function onPointerDown(e){
   const cell = e.target.closest('.ms-cell');
@@ -753,27 +838,41 @@ function drawCell(x,y,animate=false){
   el.innerHTML=''; el.textContent='';
   el.style.transform = (pressCell && pressCell.x===x && pressCell.y===y) ? 'translateY(1px) scale(0.985)' : '';
   el.style.fontSize = `${textPx}px`;
+  el.style.textShadow='';
+  el.style.fontWeight='';
+  el.className = 'ms-cell';
 
   if (!alive && grid[y][x]===-1){
+    el.classList.add('is-mine');
     el.style.background = revealedBg();
     el.style.borderColor = '#d14545';
     el.style.color = '#f5f7ff';
     el.innerHTML = ICON.mineSVG(iconPx);
+    if (hoverEl === el) el.classList.add('is-hovered');
     return;
   }
   if (st===0){
+    el.classList.add('is-hidden');
     el.style.background = hiddenBg(); el.style.borderColor=hiddenBorder(); el.style.color='#dfe6f3';
   } else if (st===2){
+    el.classList.add('is-flagged');
     el.style.background = flaggedBg(); el.style.borderColor='#e6b24f'; el.style.color='#ffd476'; el.innerHTML=ICON.flagSVG(iconPx);
   } else if (st===3){
+    el.classList.add('is-question');
     el.style.background = cfg.highContrast ? '#122036' : '#1a2133';
     el.style.borderColor = '#6b7899'; el.style.color='#9daccc'; el.textContent = cfg.colorBlind ? '？' : '?';
   } else {
+    el.classList.add('is-revealed');
     el.style.background = revealedBg(); el.style.borderColor='#334166';
     const v=grid[y][x];
     if (v>0){
       const color=cfg.highContrast?boost(NUMC[v],1.18):NUMC[v];
-      el.style.color=color; el.style.fontWeight='900'; el.textContent = cfg.colorBlind?`${v} ${GLYPH[v]||''}`:String(v);
+      el.style.color=color;
+      el.style.fontWeight='900';
+      el.style.textShadow='0 1px 2px rgba(0,0,0,.28)';
+      el.textContent = cfg.colorBlind?`${v} ${GLYPH[v]||''}`:String(v);
+    } else {
+      el.style.textShadow='none';
     }
     if (animate){
       el.animate(
@@ -784,8 +883,9 @@ function drawCell(x,y,animate=false){
     }
   }
   if (won && st===1 && grid[y][x]!==-1){
-    el.style.background='linear-gradient(180deg, '+revealedBg()+', #20335e)';
+    el.style.background='#20335e';
   }
+  if (hoverEl === el) el.classList.add('is-hovered');
 }
 function drawAll(){ for (let y=0;y<cfg.h;y++) for (let x=0;x<cfg.w;x++) drawCell(x,y); }
 
@@ -1069,9 +1169,7 @@ function saveLeaderboard(elapsed){
 
 // ---------------- Settings (preferences-only) ----------------
 function openSettings(){
-  const host=document.fullscreenElement || wrap;
-  if (settingsOverlay.parentElement!==host){ settingsOverlay.remove(); host.appendChild(settingsOverlay); }
-  Object.assign(settingsOverlay.style,{ position:'absolute', inset:'0' });
+  showModalOverlay(settingsOverlay);
 
   settingsCard.innerHTML='';
   const h1=document.createElement('div'); h1.textContent='Settings'; h1.style.fontSize='20px'; h1.style.fontWeight='800'; h1.style.marginBottom='8px';
@@ -1094,6 +1192,7 @@ function openSettings(){
   const qmRow   = checkboxRow('Question marks (third click)', cfg.questionMarks);
 
   const tileRow = rangeRow('Preferred tile size', cfg.tileSize, 12, 96, 1, v=>`${v} px`);
+  fitRunRangeRow(tileRow);
 
   // Long-press for touch
   const lpRow = document.createElement('div');
@@ -1118,7 +1217,7 @@ function openSettings(){
     lpRow
   );
 
-  const btns=document.createElement('div'); Object.assign(btns.style,{ display:'flex', justifyContent:'flex-end', gap:'8px', marginTop:'8px' });
+  const btns=document.createElement('div'); Object.assign(btns.style,{ display:'flex', justifyContent:'flex-end', gap:'8px', marginTop:'8px', flexWrap:'wrap' });
   const cancelB=pill('Cancel', ()=> closeSettings(), 'ghost');
   const saveB  =pill('Save', ()=> {
     cfg.highContrast = !!hcRow.input.checked;
@@ -1131,15 +1230,12 @@ function openSettings(){
     save('mines','settings',cfg);
     closeSettings();
     layoutSquare();
-    layoutGrid();
     drawAll();
     refreshMinimap();
   });
   btns.append(cancelB,saveB);
 
   settingsCard.append(h1, form, btns);
-  settingsOverlay.style.display='grid';
-
   const onClick=(e)=>{ if (e.target===settingsOverlay) closeSettings(); };
   const onKey=(e)=>{ if (e.key==='Escape') closeSettings(); };
   settingsOverlay.addEventListener('click', onClick, { once:true });
@@ -1156,6 +1252,27 @@ function rangeRow(label,value,min,max,step,fmt){
   r.addEventListener('input',()=> out.textContent=fmt(Number(r.value)));
   inputWrap.append(r,out); row.append(lab,inputWrap);
   return {row, input:r};
+}
+function fitRunRangeRow(rowObj){
+  const row = rowObj?.row;
+  const input = rowObj?.input;
+  if (!row || !input) return;
+  Object.assign(row.style,{
+    gridTemplateColumns:'minmax(0,1fr)',
+    alignItems:'stretch',
+    minWidth:'0'
+  });
+  const inputWrap = input.parentElement;
+  if (inputWrap){
+    Object.assign(inputWrap.style,{
+      display:'grid',
+      gridTemplateColumns:'minmax(0,1fr) auto',
+      width:'100%',
+      minWidth:'0'
+    });
+  }
+  input.style.width='100%';
+  input.style.minWidth='0';
 }
 function checkboxRow(label,checked){
   const row=document.createElement('div'); Object.assign(row.style,{display:'grid',gridTemplateColumns:'1fr auto',alignItems:'center',gap:'8px'});
@@ -1179,10 +1296,10 @@ function restart(){
   const best = load('mines', bestKey(), null);
   const auraLine = auraPotential>0 ? `Aura potential: ${Math.round(auraPotential)}/100` : '';
   const auraInfo = auraLine ? ` • ${auraLine}` : '';
-  api.setNote(best? `Best: ${fmtTime(best)}${auraInfo}` : (cfg.daily? `Daily challenge ready${auraInfo}` : `Good luck!${auraInfo}`));
-  if (!settingsOverlay.parentElement) wrap.appendChild(settingsOverlay);
-  if (!uploadOverlay.parentElement) wrap.appendChild(uploadOverlay);
-  if (!runOverlay.parentElement) wrap.appendChild(runOverlay);
+  api.setNote(best? `Best: ${fmtTime(best)}${auraInfo}` : (cfg.daily? `Daily challenge ready${auraInfo}` : `Good luck!${auraLine ? `\n${auraLine}` : ''}`));
+  if (!settingsOverlay.parentElement) api.mount.appendChild(settingsOverlay);
+  if (!uploadOverlay.parentElement) api.mount.appendChild(uploadOverlay);
+  if (!runOverlay.parentElement) api.mount.appendChild(runOverlay);
 
   if (isReplaying) rcBar.style.display='flex'; else rcBar.style.display='none';
   enableReplayIfAny();
@@ -1544,9 +1661,7 @@ function makePayload(){
 function encodeReplayPayload(obj){ return btoa(unescape(encodeURIComponent(JSON.stringify(obj)))); }
 
 function openUpload(){
-  const host=document.fullscreenElement || wrap;
-  if (uploadOverlay.parentElement!==host){ uploadOverlay.remove(); host.appendChild(uploadOverlay); }
-  uploadOverlay.style.display='grid';
+  showModalOverlay(uploadOverlay);
 }
 function closeUpload(){ uploadOverlay.style.display='none'; pasteArea.value=''; fileInput.value=''; }
 function importReplaySmart(text){
@@ -1633,9 +1748,11 @@ function onTimeExpired(){
 
 // ---------------- Minimap ----------------
 let mmDragging=false, mmRect={x:0,y:0,w:0,h:0};
+let miniScrollRaf = 0;
 function refreshMinimap(){ drawMinimapBase(); drawMinimapViewport(); mmViewport.style.cursor = ((dims.boardW>dims.viewW)||(dims.boardH>dims.viewH))?'grab':'default'; }
 function drawMinimapBase(){
-  const ctx=mmCanvas.getContext('2d'); const W=mmCanvas.width,H=mmCanvas.height; ctx.clearRect(0,0,W,H);
+  const ctx=mmCtx; if (!ctx) return;
+  const W=mmCanvas.width,H=mmCanvas.height; ctx.clearRect(0,0,W,H);
   const pad=6; ctx.save(); ctx.strokeStyle='rgba(255,255,255,.18)'; ctx.lineWidth=1; ctx.strokeRect(pad,pad,W-2*pad,H-2*pad); ctx.restore();
   ctx.save(); ctx.fillStyle='rgba(255,255,255,.06)'; ctx.fillRect(pad,pad,W-2*pad,H-2*pad); ctx.restore();
 }
@@ -1645,10 +1762,20 @@ function drawMinimapViewport(){
   const vx=pad + dims.scrollX*sx, vy=pad + dims.scrollY*sy, vw=Math.max(8,dims.viewW*sx), vh=Math.max(8,dims.viewH*sy);
   mmRect={x:vx,y:vy,w:vw,h:vh}; Object.assign(mmViewport.style,{ left:`${vx}px`, top:`${vy}px`, width:`${vw}px`, height:`${vh}px` });
 }
-mmViewport.addEventListener('pointerdown',(e)=>{ mmDragging=true; mmViewport.setPointerCapture(e.pointerId); mmViewport.style.cursor='grabbing'; moveMiniFromEvent(e); });
-mmViewport.addEventListener('pointermove',(e)=>{ if(mmDragging) moveMiniFromEvent(e); });
-mmViewport.addEventListener('pointerup',(e)=>{ mmDragging=false; mmViewport.releasePointerCapture(e.pointerId); mmViewport.style.cursor='grab'; });
-mmViewport.addEventListener('pointercancel',()=>{ mmDragging=false; mmViewport.style.cursor='grab'; });
+mmWrap.addEventListener('pointerdown',(e)=>{
+  mmDragging=true;
+  try{ mmWrap.setPointerCapture(e.pointerId); }catch{}
+  mmViewport.style.cursor='grabbing';
+  moveMiniFromEvent(e);
+  e.preventDefault();
+});
+mmWrap.addEventListener('pointermove',(e)=>{ if(mmDragging) moveMiniFromEvent(e); });
+mmWrap.addEventListener('pointerup',(e)=>{
+  mmDragging=false;
+  try{ mmWrap.releasePointerCapture(e.pointerId); }catch{}
+  mmViewport.style.cursor='grab';
+});
+mmWrap.addEventListener('pointercancel',()=>{ mmDragging=false; mmViewport.style.cursor='grab'; });
 function moveMiniFromEvent(e){
   const rect=mmCanvas.getBoundingClientRect(); const x=e.clientX-rect.left, y=e.clientY-rect.top;
   const pad=6, W=mmCanvas.width,H=mmCanvas.height; const mx=clamp(x,pad,W-pad), my=clamp(y,pad,H-pad);
@@ -1657,7 +1784,15 @@ function moveMiniFromEvent(e){
   inner.scrollLeft = clamp(targetX,0,Math.max(0,dims.boardW-dims.viewW));
   inner.scrollTop  = clamp(targetY,0,Math.max(0,dims.boardH-dims.viewH));
 }
-inner.addEventListener('scroll',()=>{ computeDims(); drawMinimapViewport(); },{ passive:true });
+function scheduleMinimapViewport(){
+  if (miniScrollRaf) return;
+  miniScrollRaf = requestAnimationFrame(()=>{
+    miniScrollRaf = 0;
+    computeDims();
+    drawMinimapViewport();
+  });
+}
+inner.addEventListener('scroll',scheduleMinimapViewport,{ passive:true });
 
 // ---------------- Run configuration helpers ----------------
 function normalizeRunCfg(rc){
@@ -1756,9 +1891,7 @@ function recomputeAura(reason){
 
 // ---------------- Run overlay (New run) ----------------
 function openRunOverlay(mode){
-  const host=document.fullscreenElement || wrap;
-  if (runOverlay.parentElement!==host){ runOverlay.remove(); host.appendChild(runOverlay); }
-  runOverlay.style.display='grid';
+  showModalOverlay(runOverlay);
   runOverlay.dataset.mode = mode || 'new';
 
   runCard.innerHTML='';
@@ -1780,7 +1913,7 @@ function openRunOverlay(mode){
   // Difficulty row
   const diffLabel=document.createElement('div'); diffLabel.textContent='Difficulty'; diffLabel.style.fontWeight='700';
   const diffRow=document.createElement('div');
-  Object.assign(diffRow.style,{display:'grid',gridTemplateColumns:'repeat(6,minmax(0,1fr))',gap:'6px'});
+  Object.assign(diffRow.style,{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(92px,1fr))',gap:'6px',minWidth:0});
   const diffs=['Basic','Easy','Average','Hard','Pro','Custom'];
   const diffBtns = diffs.map(name=>{
     const b=document.createElement('button');
@@ -1807,8 +1940,10 @@ function openRunOverlay(mode){
 
   const sizeInputRow = rangeRow('Size (N × N)', draft.size, 6, 40, 1, v=>`${v} × ${v}`);
   const sizeInput = sizeInputRow.input;
+  fitRunRangeRow(sizeInputRow);
   const minesInputRow = rangeRow('Mines', draft.mines, 1, draft.size*draft.size-1, 1, v=>`${v}`);
   const minesInput = minesInputRow.input;
+  fitRunRangeRow(minesInputRow);
 
   // tie mines slider max to size
   sizeInput.addEventListener('input',()=>{
@@ -1835,7 +1970,7 @@ function openRunOverlay(mode){
   const helpTitle=document.createElement('div'); helpTitle.textContent='Help'; helpTitle.style.fontWeight='700';
 
   const hintsModeRow=document.createElement('div');
-  Object.assign(hintsModeRow.style,{display:'grid',gridTemplateColumns:'repeat(3,minmax(0,1fr))',gap:'6px'});
+  Object.assign(hintsModeRow.style,{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:'6px',minWidth:0});
   const hintsModes=['off','limited','unlimited'];
   const hintsModeLabels={off:'Off',limited:'Limited',unlimited:'Unlimited'};
   const hintsModeRadios = hintsModes.map(modeVal=>{
@@ -1857,6 +1992,7 @@ function openRunOverlay(mode){
 
   const hintsMaxRow = rangeRow('Max hints (when limited)', draft.hintsMax, 0, 20, 1, v=>`${v}`);
   const hintsMaxInput = hintsMaxRow.input;
+  fitRunRangeRow(hintsMaxRow);
   hintsMaxInput.addEventListener('input',()=>{
     draft.hintsMax = clamp(Number(hintsMaxInput.value)||draft.hintsMax,0,50);
     refreshAuraPreview();
@@ -1874,7 +2010,7 @@ function openRunOverlay(mode){
   const timeTitle=document.createElement('div'); timeTitle.textContent='Time'; timeTitle.style.fontWeight='700';
 
   const timerModeRow=document.createElement('div');
-  Object.assign(timerModeRow.style,{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:'6px'});
+  Object.assign(timerModeRow.style,{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:'6px',minWidth:0});
   const timerModes=['off','limit'];
   const timerModeLabels={off:'Off',limit:'On (challenge)'};
   const timerModeBtns = timerModes.map(modeVal=>{
@@ -1895,6 +2031,7 @@ function openRunOverlay(mode){
 
   const timeLimitRow = rangeRow('Time limit (minutes)', draft.timeLimitMin, 1, 60, 1, v=>`${v} min`);
   const timeLimitInput = timeLimitRow.input;
+  fitRunRangeRow(timeLimitRow);
   timeLimitInput.addEventListener('input',()=>{
     draft.timeLimitMin = clamp(Number(timeLimitInput.value)||draft.timeLimitMin,1,60);
     refreshAuraPreview();
@@ -1994,7 +2131,19 @@ function openRunOverlay(mode){
 
   // Buttons bottom
   const btnRow=document.createElement('div');
-  Object.assign(btnRow.style,{display:'flex',justifyContent:'flex-end',gap:'8px',marginTop:'10px',flexWrap:'wrap'});
+  Object.assign(btnRow.style,{
+    display:'flex',
+    justifyContent:'flex-end',
+    gap:'8px',
+    marginTop:'10px',
+    flexWrap:'wrap',
+    position:'sticky',
+    bottom:'0',
+    zIndex:'2',
+    paddingTop:'10px',
+    paddingBottom:'2px',
+    background:'var(--card)'
+  });
   const modeLabel=document.createElement('div');
   modeLabel.style.flex='1';
   modeLabel.style.minWidth='160px';
@@ -2036,11 +2185,19 @@ function closeRunOverlay(){
 }
 
 // ---------------- Window & init ----------------
-window.addEventListener('resize',()=>{ layoutSquare(); layoutGrid(); computeDims(); refreshMinimap(); });
+let resizeRaf = 0;
+function scheduleLayoutRefresh(){
+  if (resizeRaf) return;
+  resizeRaf = requestAnimationFrame(()=>{
+    resizeRaf = 0;
+    layoutSquare();
+  });
+}
+window.addEventListener('resize',scheduleLayoutRefresh);
 
-wrap.appendChild(settingsOverlay);
-wrap.appendChild(uploadOverlay);
-wrap.appendChild(runOverlay);
+api.mount.appendChild(settingsOverlay);
+api.mount.appendChild(uploadOverlay);
+api.mount.appendChild(runOverlay);
 
 // Initial run + overlay
 restart();
@@ -2052,6 +2209,9 @@ return {
     document.removeEventListener('contextmenu', killContext);
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('keydown', onReplayKey);
+    window.removeEventListener('resize', scheduleLayoutRefresh);
+    if (resizeRaf) cancelAnimationFrame(resizeRaf);
+    if (miniScrollRaf) cancelAnimationFrame(miniScrollRaf);
     stopTimer();
   }
 };

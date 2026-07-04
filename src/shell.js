@@ -50,6 +50,7 @@ export function createShell({ overlayEl, galleryEl, onToggleFavorite, isFavorite
 
     const wrap = document.createElement('div');
     wrap.className = 'game-frame';
+    wrap.dataset.gameId = game.id;
     wrap.innerHTML = `
       <div class="frame-top">
         <div class="left">
@@ -73,7 +74,6 @@ export function createShell({ overlayEl, galleryEl, onToggleFavorite, isFavorite
             ${favOn ? '★ Favorite' : '☆ Favorite'}
           </button>
 
-          <button class="ghost" id="pauseBtn">Pause</button>
         </div>
       </div>
       <div class="canvas-wrap" id="gameMount">
@@ -88,7 +88,10 @@ export function createShell({ overlayEl, galleryEl, onToggleFavorite, isFavorite
     const note = wrap.querySelector('#centerNote');
 
     function setStatus(_s) {}
-    function setNote(s) { note.textContent = s || ''; note.style.display = s ? 'block' : 'none'; }
+    function setNote(s) {
+      note.textContent = s || '';
+      note.style.display = s ? (game.id === 'mines' ? 'flex' : 'block') : 'none';
+    }
     function addHudPill(id, initial='') {
       const el = document.createElement('span');
       el.className = 'pill';
@@ -111,16 +114,6 @@ export function createShell({ overlayEl, galleryEl, onToggleFavorite, isFavorite
     wrap.querySelector('#backBtn').addEventListener('click', () => {
       close();
       if (location.hash) history.pushState('', document.title, window.location.pathname + window.location.search);
-    });
-
-    // Pause
-    wrap.querySelector('#pauseBtn').addEventListener('click', () => {
-      if (!ctx?.pause) return;
-      if (wrap.dataset.paused === '1') {
-        wrap.dataset.paused = '0'; ctx.resume();
-      } else {
-        wrap.dataset.paused = '1'; ctx.pause();
-      }
     });
 
     // Favorite in overlay
