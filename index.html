@@ -8,6 +8,7 @@
   <title>Arcade</title>
   <link rel="icon" href="data:," />
   <link rel="stylesheet" href="/src/styles.css" />
+  <link rel="stylesheet" href="assets/screen-guidance.css">
 </head>
 <body>
   <div id="app" class="page">
@@ -46,5 +47,13 @@
 
   <!-- keep main last -->
   <script type="module" src="/src/main.js"></script>
+<dialog id="demo-screen-guidance" aria-labelledby="screen-guidance-title" aria-describedby="screen-guidance-copy" data-min-width="600" data-min-height="480" data-focus="#search">
+  <p class="screen-kicker">Puzzle Gallery · Computer demo</p>
+  <h1 id="screen-guidance-title">Puzzle Gallery requires a computer</h1>
+  <p id="screen-guidance-copy">This collection is best on a computer or larger screen. Some boards and controls feel cramped in this window, so this demo requires a computer.</p>
+  <p>Already on a computer? Enlarge your browser window to continue.</p>
+  <div class="screen-actions"><a href="https://villewedenberg.com/work/puzzle-gallery/">Back to the portfolio</a></div>
+</dialog>
+<script type="module" src="assets/screen-guidance.js"></script>
 </body>
 </html>
